@@ -136,14 +136,17 @@ def detect_long_format(df: pd.DataFrame):
     return None, None
 
 
+@st.cache_data(show_spinner=False)
 def standardize_logs(
     raw_df: pd.DataFrame,
     plan_col: str,
     time_col: str,
     strip_leading_symbols: bool,
-    pos_chars: set,
-    neg_chars: set,
+    pos_tuple: tuple,
+    neg_tuple: tuple,
 ):
+    pos_chars = set(pos_tuple)
+    neg_chars = set(neg_tuple)
     df = raw_df.copy()
     df[plan_col] = df[plan_col].astype(str).str.strip()
     df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
@@ -204,6 +207,7 @@ def standardize_logs(
     return piv, numeric_cols
 
 
+@st.cache_data(show_spinner=False)
 def filter_unstable_segments(
     df: pd.DataFrame,
     speed_col: str | None,
@@ -211,10 +215,11 @@ def filter_unstable_segments(
     max_speed_span: float,
     max_speed_jump: float,
     buffer_rows: int,
-    watch_cols: list[str],
+    watch_tuple: tuple,
     rolling_win: int,
     max_std_ratio: float,
 ) -> pd.DataFrame:
+    watch_cols = list(watch_tuple)
     out = df.copy()
     n = len(out)
     if n == 0:
@@ -280,11 +285,6 @@ def filter_unstable_segments(
 
 
 def discover_zone_item_types(numeric_cols: list[str], kind: str, max_zones: int = 8) -> list[str]:
-    """
-    自动识别某类 1~8 节参数的具体子项名称（去除分区号与 A/B 前后缀）：
-    - kind == 'temp': 如 '烘箱温度PV', '烘箱温度SV'
-    - kind == 'fan':  如 '供应鼓风机', '供应鼓风机RPMSV', '排气鼓风机', '排气鼓风机RPMSV'
-    """
     found = []
     zone_pat = "|".join(str(z) for z in range(1, max_zones + 1))
     for col in numeric_cols:
@@ -303,7 +303,6 @@ def discover_zone_item_types(numeric_cols: list[str], kind: str, max_zones: int 
 
 
 def extract_item_zone_values(row_series: pd.Series, side_prefix: str, item_name: str, max_zones: int = 8) -> list[float]:
-    """提取指定侧（A/B）和指定参数子项（如 烘箱温度PV / 供应鼓风机）在 1~8 节的值"""
     vals = []
     for z in range(1, max_zones + 1):
         candidates = [
@@ -332,9 +331,6 @@ def build_dual_axis_stacked_chart(
     max_zones: int = 8,
     height: int = 560,
 ):
-    """
-    绘制上下双子图折线图（上=A侧，下=B侧），支持按曲线指定主坐标（y1）或次坐标（y2）。
-    """
     palette_primary = ["#d62728", "#2ca02c", "#9467bd", "#1f77b4", "#ff7f0e", "#8c564b"]
     palette_secondary = ["#008080", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f", "#aec7e8"]
 
@@ -359,7 +355,6 @@ def build_dual_axis_stacked_chart(
         else:
             p_idx += 1
 
-        # 上半图：A 侧
         y_a = extract_item_zone_values(row_series, "A", item, max_zones=max_zones)
         fig.add_trace(
             go.Scatter(
@@ -375,7 +370,6 @@ def build_dual_axis_stacked_chart(
             secondary_y=is_sec,
         )
 
-        # 下半图：B 侧
         y_b = extract_item_zone_values(row_series, "B", item, max_zones=max_zones)
         fig.add_trace(
             go.Scatter(
@@ -448,12 +442,40 @@ def build_group_bar_chart(row_series: pd.Series, cols: list[str], title: str, y_
     return fig
 
 
+def build_tension_chart(row_series: pd.Series, tension_cols: list[str], title: str, height: int = 360):
+    """绘制各工位稳态张力对比图"""
+    valid_cols = [c for c in tension_cols if c in row_series.index and pd.notna(row_series[c])]
+    if not valid_cols:
+        return None
+    vals = [float(row_series[c]) for c in valid_cols]
+    colors = ["#2b6cb0", "#2f855a", "#b7791f", "#6b46c1", "#c53030", "#2c7a7b"]
+    fig = go.Figure(
+        go.Bar(
+            x=valid_cols,
+            y=vals,
+            text=[f"{v:.2f}" for v in vals],
+            textposition="outside",
+            marker_color=[colors[i % len(colors)] for i in range(len(valid_cols))],
+        )
+    )
+    fig.update_layout(
+        title=title,
+        yaxis_title="张力值",
+        xaxis_title="张力工位 / 参数",
+        height=height,
+        dragmode="pan",
+    )
+    return fig
+
+
+@st.cache_data(show_spinner=False)
 def build_summary_table(
     steady_df: pd.DataFrame,
-    numeric_cols: list[str],
+    numeric_cols_tuple: tuple,
     split_by_file: bool = True,
     group_by_plan: bool = True,
 ) -> pd.DataFrame:
+    numeric_cols = list(numeric_cols_tuple)
     if steady_df.empty or not numeric_cols:
         return pd.DataFrame()
 
@@ -681,6 +703,24 @@ def render_model_report_page(
             })
         st.dataframe(pd.DataFrame(fixed_rows), use_container_width=True, hide_index=True)
 
+    # 张力可视化
+    tension_cols = [c for c in numeric_cols if any(k in str(c) for k in ["张力", "tension", "Tension"])]
+    if tension_cols:
+        st.markdown("#### 张力参数可视化（稳态均值与波动）")
+        fig_tension = build_tension_chart(mean_row, tension_cols, f"{model_label} 各工位稳态张力均值")
+        if fig_tension:
+            st.plotly_chart(fig_tension, use_container_width=True, config={"scrollZoom": False})
+        t_rows = []
+        for c in tension_cols:
+            t_rows.append({
+                "张力参数": c,
+                "均值": round(float(mean_row[c]), 3) if pd.notna(mean_row[c]) else np.nan,
+                "标准差": round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
+                "最小值": round(float(sub_steady[c].min()), 3) if sub_steady[c].notna().any() else np.nan,
+                "最大值": round(float(sub_steady[c].max()), 3) if sub_steady[c].notna().any() else np.nan,
+            })
+        st.dataframe(pd.DataFrame(t_rows), use_container_width=True, hide_index=True)
+
     # 1. 温度折线图（主/次坐标）
     st.markdown("#### 烘箱温度 1~8 节（A侧 / B侧 · 主次坐标）")
     if temp_selected:
@@ -702,7 +742,7 @@ def render_model_report_page(
             hide_index=True,
         )
     else:
-        st.info("未选择任何温度曲线，请在上方“图表曲线与主次坐标菜单”中勾选。")
+        st.info("当前未选择任何温度曲线。")
 
     # 2. 鼓风机折线图（主/次坐标）
     st.markdown("#### 鼓风机 1~8 节（A侧 / B侧 · 主次坐标）")
@@ -725,7 +765,7 @@ def render_model_report_page(
             hide_index=True,
         )
     else:
-        st.info("未选择任何鼓风机曲线，请在上方“图表曲线与主次坐标菜单”中勾选。")
+        st.info("当前未选择任何鼓风机曲线。")
 
     nmp_cols = [c for c in numeric_cols if "NMP浓度" in c]
     if nmp_cols:
@@ -750,7 +790,7 @@ def render_model_report_page(
 
     other_cols = [
         c for c in numeric_cols
-        if not any(k in c for k in ["烘箱温度", "温度PV", "温度SV", "供应鼓风机", "排气鼓风机", "鼓风机", "NMP浓度"])
+        if not any(k in c for k in ["烘箱温度", "温度PV", "温度SV", "供应鼓风机", "排气鼓风机", "鼓风机", "NMP浓度", "张力", "tension", "Tension"])
     ]
     if other_cols:
         st.markdown("#### 其他工艺参数")
@@ -765,7 +805,7 @@ def render_model_report_page(
                     st.plotly_chart(fig_p, use_container_width=True, config={"scrollZoom": False})
         with col_g2:
             if ctrl_grp:
-                fig_c = build_group_bar_chart(mean_row, ctrl_grp[:12], f"{model_label} 速度/张力/尺寸参数", "参数值")
+                fig_c = build_group_bar_chart(mean_row, ctrl_grp[:12], f"{model_label} 速度/尺寸参数", "参数值")
                 if fig_c:
                     st.plotly_chart(fig_c, use_container_width=True, config={"scrollZoom": False})
 
@@ -829,8 +869,8 @@ with st.sidebar:
     strip_leading = st.checkbox("自动忽略开头的 `'`、`\"`、`*`、`#` 等无意义符号（保留 `+`、`-`）", value=True)
     pos_text = st.text_input("正极首字符集合（逗号分隔）", value="+")
     neg_text = st.text_input("负极首字符集合（逗号分隔）", value="-")
-    pos_chars = {x.strip().upper() for x in pos_text.split(",") if x.strip()}
-    neg_chars = {x.strip().upper() for x in neg_text.split(",") if x.strip()}
+    pos_chars = tuple(sorted({x.strip().upper() for x in pos_text.split(",") if x.strip()}))
+    neg_chars = tuple(sorted({x.strip().upper() for x in neg_text.split(",") if x.strip()}))
 
 st.title("机台 Log 稳态工艺报表")
 st.caption("按产品型号分标签展示稳态工艺参数与 1~8 节对照")
@@ -894,7 +934,7 @@ checked_df = filter_unstable_segments(
     max_speed_span=max_speed_span,
     max_speed_jump=max_speed_jump,
     buffer_rows=int(buffer_rows),
-    watch_cols=watch_cols,
+    watch_tuple=tuple(watch_cols),
     rolling_win=int(rolling_win),
     max_std_ratio=max_std_ratio,
 )
@@ -913,41 +953,85 @@ with f4:
     plan_opts = sorted(checked_df["标准_计划号"].dropna().unique())
     sel_plan = st.multiselect("筛选计划号", plan_opts, default=plan_opts)
 
-# 温度及鼓风机折线图：复选菜单 + 主次坐标选择菜单
 temp_avail_items = discover_zone_item_types(numeric_cols, kind="temp", max_zones=8)
 fan_avail_items = discover_zone_item_types(numeric_cols, kind="fan", max_zones=8)
+
+if "applied_chart_cfg" not in st.session_state:
+    default_fan_sec = [x for x in fan_avail_items if "RPMSV" in x or "SV" in x]
+    st.session_state.applied_chart_cfg = {
+        "temp_selected": list(temp_avail_items),
+        "temp_secondary": [],
+        "fan_selected": list(fan_avail_items),
+        "fan_secondary": list(default_fan_sec),
+    }
+
+avail_sig = (tuple(temp_avail_items), tuple(fan_avail_items))
+if st.session_state.get("last_chart_avail_sig") != avail_sig:
+    st.session_state.last_chart_avail_sig = avail_sig
+    st.session_state.applied_chart_cfg = {
+        "temp_selected": list(temp_avail_items),
+        "temp_secondary": [],
+        "fan_selected": list(fan_avail_items),
+        "fan_secondary": [x for x in fan_avail_items if "RPMSV" in x or "SV" in x],
+    }
+
+applied_cfg = st.session_state.applied_chart_cfg
 
 with st.expander("温度及鼓风机折线图选择与主次坐标配置", expanded=True):
     c_t1, c_t2 = st.columns(2)
     with c_t1:
         st.markdown("**温度折线图（复选参数 + 次坐标设置）**")
-        temp_selected = st.multiselect(
+        draft_temp_sel = st.multiselect(
             "选择要绘制的温度曲线",
             options=temp_avail_items,
-            default=temp_avail_items,
-            key="temp_curve_select",
+            default=[x for x in applied_cfg["temp_selected"] if x in temp_avail_items],
+            key="draft_temp_sel",
         )
-        temp_secondary = st.multiselect(
+        draft_temp_sec = st.multiselect(
             "设为次坐标（右轴 y2）的温度曲线（其余默认主坐标 y1）",
-            options=temp_selected,
-            default=[],
-            key="temp_sec_axis_select",
+            options=draft_temp_sel,
+            default=[x for x in applied_cfg["temp_secondary"] if x in draft_temp_sel],
+            key="draft_temp_sec",
         )
     with c_t2:
         st.markdown("**鼓风机折线图（复选参数 + 次坐标设置）**")
-        fan_selected = st.multiselect(
+        draft_fan_sel = st.multiselect(
             "选择要绘制的鼓风机曲线",
             options=fan_avail_items,
-            default=fan_avail_items,
-            key="fan_curve_select",
+            default=[x for x in applied_cfg["fan_selected"] if x in fan_avail_items],
+            key="draft_fan_sel",
         )
-        default_fan_sec = [x for x in fan_selected if "RPMSV" in x or "SV" in x]
-        fan_secondary = st.multiselect(
+        draft_fan_sec = st.multiselect(
             "设为次坐标（右轴 y2）的鼓风机曲线（其余默认主坐标 y1）",
-            options=fan_selected,
-            default=default_fan_sec,
-            key="fan_sec_axis_select",
+            options=draft_fan_sel,
+            default=[x for x in applied_cfg["fan_secondary"] if x in draft_fan_sel],
+            key="draft_fan_sec",
         )
+
+    has_pending = (
+        draft_temp_sel != applied_cfg["temp_selected"]
+        or draft_temp_sec != applied_cfg["temp_secondary"]
+        or draft_fan_sel != applied_cfg["fan_selected"]
+        or draft_fan_sec != applied_cfg["fan_secondary"]
+    )
+
+    b_col1, b_col2 = st.columns([1, 4])
+    with b_col1:
+        confirm_draw = st.button("确认并绘制图表", type="primary", use_container_width=True)
+    with b_col2:
+        if has_pending:
+            st.warning("已修改选项，点击左侧“确认并绘制图表”后生效。")
+        else:
+            st.caption("当前图表与所选参数及主/次坐标配置一致。")
+
+    if confirm_draw:
+        st.session_state.applied_chart_cfg = {
+            "temp_selected": list(draft_temp_sel),
+            "temp_secondary": list(draft_temp_sec),
+            "fan_selected": list(draft_fan_sel),
+            "fan_secondary": list(draft_fan_sec),
+        }
+        applied_cfg = st.session_state.applied_chart_cfg
 
 mask_view = (
     checked_df["来源文件"].isin(sel_file)
@@ -959,7 +1043,7 @@ view_all = checked_df[mask_view].copy()
 view_steady = view_all[view_all["是否稳态"]].copy()
 view_summary = build_summary_table(
     view_steady,
-    numeric_cols,
+    tuple(numeric_cols),
     split_by_file=split_by_file,
     group_by_plan=group_by_plan,
 )
@@ -985,10 +1069,10 @@ if sel_mod:
                 m_all,
                 numeric_cols,
                 model_label=m_code,
-                temp_selected=temp_selected,
-                temp_secondary=temp_secondary,
-                fan_selected=fan_selected,
-                fan_secondary=fan_secondary,
+                temp_selected=applied_cfg["temp_selected"],
+                temp_secondary=applied_cfg["temp_secondary"],
+                fan_selected=applied_cfg["fan_selected"],
+                fan_secondary=applied_cfg["fan_secondary"],
             )
 
 base_idx = len(model_tabs_labels)
