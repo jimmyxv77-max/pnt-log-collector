@@ -605,8 +605,8 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
         st.dataframe(pd.DataFrame(rep_rows), use_container_width=True, hide_index=True)
 
 
-if "raw_log_df" not in st.session_state:
-    st.session_state.raw_log_df = generate_demo_log_df()
+if "force_demo" not in st.session_state:
+    st.session_state.force_demo = False
 
 with st.sidebar:
     st.title("📥 机台 Log 导入与解析")
@@ -617,7 +617,11 @@ with st.sidebar:
     )
     append_mode = st.checkbox("多文件追加合并（关闭则覆盖当前数据）", value=False)
 
-    if uploaded_files:
+    if st.button("恢复示例机台 Log"):
+        st.session_state.force_demo = True
+        st.rerun()
+
+    if uploaded_files and not st.session_state.force_demo:
         imported_list = []
         for uf in uploaded_files:
             try:
@@ -629,23 +633,22 @@ with st.sidebar:
 
         if imported_list:
             combined_new = pd.concat(imported_list, ignore_index=True)
-            batch_sig = tuple((uf.name, uf.size) for uf in uploaded_files)
-            if st.session_state.get("last_batch_sig") != batch_sig:
-                if append_mode and st.session_state.get("has_user_import"):
-                    st.session_state.raw_log_df = pd.concat(
-                        [st.session_state.raw_log_df, combined_new], ignore_index=True
-                    )
-                else:
-                    st.session_state.raw_log_df = combined_new
-                st.session_state.has_user_import = True
-                st.session_state.last_batch_sig = batch_sig
-                st.success(f"已导入 {len(imported_list)} 个文件，共 {len(combined_new)} 行原始记录。")
+            if append_mode and st.session_state.get("prev_upload_df") is not None:
+                raw_df = pd.concat([st.session_state.prev_upload_df, combined_new], ignore_index=True)
+            else:
+                raw_df = combined_new
+            st.session_state.prev_upload_df = raw_df
+            data_source_label = f"已导入 {len(imported_list)} 个文件（共 {len(raw_df)} 行）"
+        else:
+            raw_df = generate_demo_log_df()
+            data_source_label = "内置示例机台 Log"
+    else:
+        if uploaded_files and st.session_state.force_demo:
+            st.session_state.force_demo = False
+        raw_df = generate_demo_log_df()
+        data_source_label = "内置示例机台 Log"
 
-    if st.button("恢复示例机台 Log"):
-        st.session_state.raw_log_df = generate_demo_log_df()
-        st.session_state.has_user_import = False
-        st.session_state.pop("last_batch_sig", None)
-        st.rerun()
+    st.caption(f"当前数据源：{data_source_label}")
 
     st.divider()
     st.markdown("### 🔤 计划号编码规则")
@@ -657,9 +660,8 @@ with st.sidebar:
     neg_chars = {x.strip().upper() for x in neg_text.split(",") if x.strip()}
 
 st.title("📊 机台原始 Log 稳态工艺可视化报表系统")
-st.markdown("支持多文件批量导入、自动屏蔽停机/波动时段，并按**不同产品型号独立标签页**展示同类参数（温度、风频/风速 1~8 节上下对照等）工艺报表。")
+st.markdown(f"当前数据源：**{data_source_label}** ｜ 支持多文件批量导入、自动屏蔽停机/波动时段，并按**不同产品型号独立标签页**展示工艺报表。")
 
-raw_df = st.session_state.raw_log_df
 all_cols = list(raw_df.columns)
 
 with st.expander("🧭 字段映射确认（如列名与默认不同，请在此选择对应列）", expanded=False):
