@@ -9,7 +9,7 @@ import streamlit as st
 
 st.set_page_config(
     page_title="机台原始 Log 标准化收集与稳态工艺报表系统",
-    page_icon="📊",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -60,10 +60,6 @@ def generate_demo_log_df() -> pd.DataFrame:
                 ("B泵速度", round(pump + 0.4, 2)),
                 ("A泵压力", round(12.5 + rng.normal(0, 0.05), 2)),
                 ("B泵压力", round(12.8 + rng.normal(0, 0.05), 2)),
-                ("AOS涂布头现位置左侧", 120.0),
-                ("ADS涂布头现位置右侧", 120.0),
-                ("BDS涂布头现位置左侧", 118.0),
-                ("BOS涂布头现位置右侧", 118.0),
                 ("放卷张力", round(35.0 + rng.normal(0, 0.2), 1)),
                 ("出料张力", round(38.0 + rng.normal(0, 0.2), 1)),
                 ("First收卷张力", round(42.0 + rng.normal(0, 0.2), 1)),
@@ -100,12 +96,6 @@ def generate_demo_log_df() -> pd.DataFrame:
 
 
 def parse_plan_code(plan_val, strip_leading_symbols: bool, pos_chars: set, neg_chars: set):
-    """
-    解析计划号：
-    - 保留开头的 +、-，仅自动忽略开头的 '、"、*、# 等无意义符号
-    - 第1位代表正极或负极
-    - 第2、3位代表产品型号（如 HE）
-    """
     s = str(plan_val).strip().upper() if pd.notna(plan_val) else ""
     if not s:
         return "未知极性", "未知型号"
@@ -128,7 +118,6 @@ def parse_plan_code(plan_val, strip_leading_symbols: bool, pos_chars: set, neg_c
 
 
 def read_uploaded_log_file(file_name: str, file_bytes: bytes) -> pd.DataFrame:
-    """读取单个 Excel 或 CSV 机台 Log 文件"""
     lower_name = file_name.lower()
     if lower_name.endswith(".csv"):
         for enc in ["utf-8-sig", "gbk", "gb18030", "utf-8"]:
@@ -143,7 +132,6 @@ def read_uploaded_log_file(file_name: str, file_bytes: bytes) -> pd.DataFrame:
 
 
 def detect_long_format(df: pd.DataFrame):
-    """检测是否为长表格式（包含“工艺参数名称”和“工艺参数值”列）"""
     name_candidates = [c for c in df.columns if "工艺参数名称" in str(c) or str(c).strip() in {"参数名称", "param_name", "parameter"}]
     val_candidates = [c for c in df.columns if "工艺参数值" in str(c) or str(c).strip() in {"参数值", "param_value", "value"}]
     if name_candidates and val_candidates:
@@ -159,10 +147,6 @@ def standardize_logs(
     pos_chars: set,
     neg_chars: set,
 ):
-    """
-    将原始机台 Log（支持长表或宽表）转换为标准化宽表（每个计划号+时间点一行，各工艺参数为一列）
-    并严格保证列名唯一，避免 PyArrow 报错。
-    """
     df = raw_df.copy()
     df[plan_col] = df[plan_col].astype(str).str.strip()
     df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
@@ -227,13 +211,14 @@ def filter_unstable_segments(
     df: pd.DataFrame,
     speed_col: str | None,
     min_speed: float,
+    max_speed_span: float,
     max_speed_jump: float,
     buffer_rows: int,
     watch_cols: list[str],
     rolling_win: int,
     max_std_ratio: float,
 ) -> pd.DataFrame:
-    """屏蔽机台停机、启停过渡及参数剧烈波动时段"""
+    """屏蔽机台停机、启停过渡、大跨度调速及参数剧烈波动时段"""
     out = df.copy()
     n = len(out)
     if n == 0:
@@ -252,12 +237,23 @@ def filter_unstable_segments(
             low_mask = spd.isna() | (spd < min_speed)
             for pos_i, r_idx in enumerate(idxs):
                 if low_mask.iloc[pos_i]:
-                    reasons[r_idx].append(f"车速<{min_speed}(停机/低速)")
+                    reasons[r_idx].append(f"线速度<{min_speed}(停机/低速)")
+
+            valid_spd = spd.dropna()
+            if len(valid_spd) > 0:
+                spd_span = float(valid_spd.max() - valid_spd.min())
+                if spd_span > max_speed_span:
+                    ref_spd = float(valid_spd.mode().iloc[0]) if not valid_spd.mode().empty else float(valid_spd.median())
+                    tol = max(1.0, max_speed_span * 0.5)
+                    span_outlier_mask = spd.isna() | ((spd - ref_spd).abs() > tol)
+                    for pos_i, r_idx in enumerate(idxs):
+                        if bool(span_outlier_mask.iloc[pos_i]):
+                            reasons[r_idx].append(f"线速度跨度>{max_speed_span}(偏离稳态{ref_spd:.1f})")
 
             jump_mask = spd.diff().abs() > max_speed_jump
             for pos_i, r_idx in enumerate(idxs):
                 if bool(jump_mask.iloc[pos_i]):
-                    reasons[r_idx].append(f"车速跳变>{max_speed_jump}")
+                    reasons[r_idx].append(f"线速度跳变>{max_speed_jump}")
 
         for w_col in watch_cols:
             if w_col in sub.columns:
@@ -288,7 +284,6 @@ def filter_unstable_segments(
 
 
 def extract_zone_series(row_series: pd.Series, side_prefix: str, pattern_tmpl_list: list[str], max_zones: int = 8):
-    """提取某侧（如 A/上层 或 B/下层）1~8 节参数均值序列"""
     x_labels = [f"{i}节" for i in range(1, max_zones + 1)]
     y_vals = []
     for z in range(1, max_zones + 1):
@@ -313,7 +308,6 @@ def build_stacked_up_down_chart(
     max_zones: int = 8,
     height: int = 540,
 ):
-    """上下双子图布局：上方展示一侧 1~8 节，下方展示另一侧 1~8 节"""
     fig = make_subplots(
         rows=2,
         cols=1,
@@ -365,28 +359,7 @@ def build_stacked_up_down_chart(
     return fig
 
 
-def build_zone_data_table(
-    row_series: pd.Series,
-    specs: list[tuple[str, str, str]],
-    max_zones: int = 8,
-    side_labels: tuple[str, str] = ("上/A", "下/B"),
-) -> pd.DataFrame:
-    """将 1~8 节上下对照图的数据整理为直观的报表表格（行=各序列，列=第1节~第8节）"""
-    cols = [f"第{z}节" for z in range(1, max_zones + 1)]
-    table_rows = []
-    for side_prefix, side_tag in [("A", side_labels[0]), ("B", side_labels[1])]:
-        for label, tmpl, _ in specs:
-            _, y_vals = extract_zone_series(row_series, side_prefix, [tmpl], max_zones=max_zones)
-            r_dict = {"侧别/参数": f"{side_tag}-{label}"}
-            for z_idx, c_name in enumerate(cols):
-                v = y_vals[z_idx]
-                r_dict[c_name] = round(float(v), 2) if pd.notna(v) else np.nan
-            table_rows.append(r_dict)
-    return pd.DataFrame(table_rows)
-
-
 def build_group_bar_chart(row_series: pd.Series, cols: list[str], title: str, y_title: str, height: int = 340):
-    """将同类单值/多点参数（如泵速、张力、对齐度、膜长）按组柱状对比"""
     valid_cols = [c for c in cols if c in row_series.index and pd.notna(row_series[c])]
     if not valid_cols:
         return None
@@ -415,7 +388,6 @@ def build_summary_table(
     split_by_file: bool = True,
     group_by_plan: bool = True,
 ) -> pd.DataFrame:
-    """按维度汇总稳态过程参数，保证列名唯一"""
     if steady_df.empty or not numeric_cols:
         return pd.DataFrame()
 
@@ -432,7 +404,6 @@ def build_summary_table(
         agg_dict[col] = ["mean", "std", "median"]
 
     grouped = steady_df.groupby(group_keys, dropna=False).agg(agg_dict)
-
     stat_map = {"mean": "均值", "std": "标准差", "median": "中位数"}
     new_cols = []
     seen_cols = set()
@@ -477,16 +448,201 @@ def to_excel_bytes(std_df: pd.DataFrame, steady_df: pd.DataFrame, sum_df: pd.Dat
     return buf.getvalue()
 
 
+def build_zone_data_table(
+    row_series: pd.Series,
+    specs: list[tuple[str, str, str]],
+    max_zones: int = 8,
+    side_labels: tuple[str, str] = ("上/A", "下/B"),
+) -> pd.DataFrame:
+    cols = [f"第{z}节" for z in range(1, max_zones + 1)]
+    table_rows = []
+    for side_prefix, side_tag in [("A", side_labels[0]), ("B", side_labels[1])]:
+        for label, tmpl, _ in specs:
+            _, y_vals = extract_zone_series(row_series, side_prefix, [tmpl], max_zones=max_zones)
+            r_dict = {"侧别/参数": f"{side_tag}-{label}"}
+            for z_idx, c_name in enumerate(cols):
+                v = y_vals[z_idx]
+                r_dict[c_name] = round(float(v), 2) if pd.notna(v) else np.nan
+            table_rows.append(r_dict)
+    return pd.DataFrame(table_rows)
+
+
+def _get_cjk_font_prop():
+    import matplotlib.font_manager as fm
+    candidates = [
+        "Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK TC",
+        "Droid Sans Fallback", "WenQuanYi Micro Hei", "SimHei", "Arial Unicode MS",
+    ]
+    available = {f.name for f in fm.fontManager.ttflist}
+    for name in candidates:
+        if name in available:
+            return fm.FontProperties(family=name)
+    for f in fm.fontManager.ttflist:
+        if any(k in f.name.lower() for k in ["cjk", "fallback", "noto sans", "wqy"]):
+            return fm.FontProperties(fname=f.fname)
+    return fm.FontProperties()
+
+
+def build_single_page_pdf(
+    model_label: str,
+    sub_steady: pd.DataFrame,
+    sub_all: pd.DataFrame,
+    numeric_cols: list[str],
+) -> bytes:
+    """将单个型号的稳态工艺可视化报表渲染为一页横向 A4 PDF"""
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    font_prop = _get_cjk_font_prop()
+    buf = io.BytesIO()
+    with PdfPages(buf) as pdf:
+        fig = plt.figure(figsize=(11.69, 8.27), dpi=150)
+        fig.patch.set_facecolor("white")
+
+        mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
+        std_row = sub_steady[numeric_cols].std(numeric_only=True)
+
+        spd_candidates = [c for c in numeric_cols if any(k in c for k in ["线速度", "线速", "车速", "速度"]) and "阀" not in c and "泵" not in c]
+        if not spd_candidates:
+            spd_candidates = [c for c in numeric_cols if any(k in c for k in ["线速度", "线速", "车速"])]
+
+        if spd_candidates:
+            scol = spd_candidates[0]
+            s_mean = float(mean_row[scol]) if pd.notna(mean_row[scol]) else np.nan
+            s_std = float(std_row[scol]) if pd.notna(std_row[scol]) else np.nan
+            s_min = float(sub_steady[scol].min()) if sub_steady[scol].notna().any() else np.nan
+            s_max = float(sub_steady[scol].max()) if sub_steady[scol].notna().any() else np.nan
+            summary_line = (
+                f"型号: {model_label}  |  {scol} 稳态均值: {s_mean:.2f} (SD {s_std:.2f}, 区间 {s_min:.2f}~{s_max:.2f})  |  "
+                f"稳态样本: {len(sub_steady)}/{len(sub_all)}  |  计划号: {sub_steady['标准_计划号'].nunique()} 个  |  "
+                f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+        else:
+            summary_line = (
+                f"型号: {model_label}  |  稳态样本: {len(sub_steady)}/{len(sub_all)}  |  "
+                f"计划号: {sub_steady['标准_计划号'].nunique()} 个  |  "
+                f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+
+        fig.text(0.03, 0.96, f"型号 {model_label} 稳态工艺报表", fontsize=14, fontweight="bold", fontproperties=font_prop)
+        fig.text(0.03, 0.925, summary_line, fontsize=8.5, color="#374151", fontproperties=font_prop)
+
+        gs = fig.add_gridspec(2, 2, left=0.05, right=0.97, top=0.89, bottom=0.08, wspace=0.22, hspace=0.34)
+        zones = list(range(1, 9))
+        x_idx = np.arange(len(zones))
+        x_tick_labels = [f"{z}节" for z in zones]
+
+        ax_t = fig.add_subplot(gs[0, 0])
+        for side, lbl, col, ls in [("A", "上/A PV", "#d62728", "-"), ("B", "下/B PV", "#1f77b4", "--")]:
+            _, yv = extract_zone_series(mean_row, side, ["{side}{z}烘箱温度PV"], max_zones=8)
+            ax_t.plot(x_idx, yv, marker="o", markersize=4, linewidth=1.8, color=col, linestyle=ls, label=lbl)
+        ax_t.set_title("烘箱温度 PV 1~8 节（上/A 与 下/B）", fontsize=9.5, fontproperties=font_prop)
+        ax_t.set_xticks(x_idx)
+        ax_t.set_xticklabels(x_tick_labels, fontsize=8, fontproperties=font_prop)
+        ax_t.set_ylabel("温度 (℃)", fontsize=8.5, fontproperties=font_prop)
+        ax_t.tick_params(axis="y", labelsize=8)
+        ax_t.grid(True, linestyle=":", alpha=0.5)
+        ax_t.legend(fontsize=7.5, loc="best", prop=font_prop)
+
+        ax_f = fig.add_subplot(gs[0, 1])
+        for side, lbl, col, ls in [
+            ("A", "上/A 供应", "#2ca02c", "-"),
+            ("B", "下/B 供应", "#008080", "--"),
+            ("A", "上/A 排气", "#9467bd", "-"),
+            ("B", "下/B 排气", "#8c564b", "--"),
+        ]:
+            _, yv = extract_zone_series(mean_row, side, ["{side}{z}供应鼓风机" if "供应" in lbl else "{side}{z}排气鼓风机"], max_zones=8)
+            ax_f.plot(x_idx, yv, marker="s", markersize=3.5, linewidth=1.6, color=col, linestyle=ls, label=lbl)
+        ax_f.set_title("鼓风机 1~8 节（供应与排气、上/下）", fontsize=9.5, fontproperties=font_prop)
+        ax_f.set_xticks(x_idx)
+        ax_f.set_xticklabels(x_tick_labels, fontsize=8, fontproperties=font_prop)
+        ax_f.set_ylabel("转速 / 频率", fontsize=8.5, fontproperties=font_prop)
+        ax_f.tick_params(axis="y", labelsize=8)
+        ax_f.grid(True, linestyle=":", alpha=0.5)
+        ax_f.legend(fontsize=7, ncol=2, loc="best", prop=font_prop)
+
+        ax_n = fig.add_subplot(gs[1, 0])
+        has_nmp = False
+        for side, lbl, col, ls in [("A", "A侧 NMP", "#e377c2", "-"), ("B", "B侧 NMP", "#7f7f7f", "--")]:
+            _, yv = extract_zone_series(mean_row, side, ["NMP浓度{side}{z}"], max_zones=8)
+            if any(pd.notna(v) for v in yv):
+                has_nmp = True
+                ax_n.plot(x_idx, yv, marker="^", markersize=4, linewidth=1.7, color=col, linestyle=ls, label=lbl)
+        if has_nmp:
+            ax_n.set_title("NMP 浓度 1~8 节（A/B 侧）", fontsize=9.5, fontproperties=font_prop)
+            ax_n.set_xticks(x_idx)
+            ax_n.set_xticklabels(x_tick_labels, fontsize=8, fontproperties=font_prop)
+            ax_n.set_ylabel("NMP 浓度", fontsize=8.5, fontproperties=font_prop)
+            ax_n.legend(fontsize=7.5, loc="best", prop=font_prop)
+        else:
+            other_cols = [c for c in numeric_cols if not any(k in c for k in ["烘箱温度", "供应鼓风机", "排气鼓风机", "NMP浓度"])][:6]
+            vals = [float(mean_row[c]) if pd.notna(mean_row[c]) else 0.0 for c in other_cols]
+            ax_n.barh(range(len(other_cols)), vals, color="#1f77b4")
+            ax_n.set_yticks(range(len(other_cols)))
+            ax_n.set_yticklabels(other_cols, fontsize=7.5, fontproperties=font_prop)
+            ax_n.set_title("稳态关键参数均值", fontsize=9.5, fontproperties=font_prop)
+        ax_n.tick_params(axis="y", labelsize=8)
+        ax_n.grid(True, linestyle=":", alpha=0.5)
+
+        ax_tb = fig.add_subplot(gs[1, 1])
+        ax_tb.axis("off")
+        ax_tb.set_title("稳态参数统计摘要", fontsize=9.5, fontproperties=font_prop, loc="left")
+
+        key_cols = [
+            c for c in numeric_cols
+            if any(k in c for k in ["线速度", "线速", "车速", "泵速度", "刀距", "涂布头现位置", "放卷张力", "出料张力"])
+        ][:8]
+        if not key_cols:
+            key_cols = numeric_cols[:8]
+
+        cell_text = []
+        for c in key_cols:
+            c_mean = f"{float(mean_row[c]):.2f}" if pd.notna(mean_row[c]) else "-"
+            c_std = f"{float(std_row[c]):.3f}" if pd.notna(std_row[c]) else "-"
+            c_rng = (
+                f"{float(sub_steady[c].min()):.2f}~{float(sub_steady[c].max()):.2f}"
+                if sub_steady[c].notna().any()
+                else "-"
+            )
+            cell_text.append([str(c)[:18], c_mean, c_std, c_rng])
+
+        if cell_text:
+            tbl = ax_tb.table(
+                cellText=cell_text,
+                colLabels=["参数", "均值", "标准差", "区间"],
+                colWidths=[0.42, 0.18, 0.16, 0.24],
+                loc="center",
+                cellLoc="center",
+            )
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(7.5)
+            tbl.scale(1.0, 1.25)
+            for (r_i, c_i), cell in tbl.get_celld().items():
+                cell.set_edgecolor("#d1d5db")
+                cell.get_text().set_fontproperties(font_prop)
+                if r_i == 0:
+                    cell.set_facecolor("#f3f4f6")
+                    cell.get_text().set_weight("bold")
+
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, numeric_cols: list[str], model_label: str):
-    """为单个产品型号渲染结构化工艺报表页面（顶部线速依据横幅 + 泵速/刀距汇总表 + 上下1~8节对比 + 底部数据表）"""
+    """渲染单个产品型号的稳态工艺报表（严格基于稳态数据）"""
+    if "是否稳态" in sub_steady.columns:
+        sub_steady = sub_steady[sub_steady["是否稳态"]].copy()
+
     if sub_steady.empty:
-        st.warning(f"型号 **{model_label}** 在当前筛选/稳态阈值下暂无稳态样本，请调整阈值或筛选条件。")
+        st.warning(f"型号 {model_label} 在当前筛选与稳态阈值条件下暂无稳态样本。")
         return
 
     mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
     std_row = sub_steady[numeric_cols].std(numeric_only=True)
 
-    # 1. 顶部醒目标识：线速度（是否可借鉴数据的核心依据）
     spd_candidates = [c for c in numeric_cols if any(k in c for k in ["线速度", "线速", "车速", "速度"]) and "阀" not in c and "泵" not in c]
     if not spd_candidates:
         spd_candidates = [c for c in numeric_cols if any(k in c for k in ["线速度", "线速", "车速"])]
@@ -498,19 +654,26 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
         spd_min = float(sub_steady[scol].min()) if sub_steady[scol].notna().any() else np.nan
         spd_max = float(sub_steady[scol].max()) if sub_steady[scol].notna().any() else np.nan
         st.info(
-            f"🎯 **核心借鉴依据 — {scol}**：稳态均值 **{spd_mean:.2f}** "
-            f"（波动 SD **{spd_std:.2f}**，稳态区间 **{spd_min:.2f} ~ {spd_max:.2f}**，稳态样本 **{len(sub_steady)}** / 全量 **{len(sub_all)}** 点，涉及计划号 **{sub_steady['标准_计划号'].nunique()}** 个）"
+            f"{scol}：稳态均值 {spd_mean:.2f}（标准差 {spd_std:.2f}，区间 {spd_min:.2f} ~ {spd_max:.2f}；"
+            f"稳态样本 {len(sub_steady)} / 全量 {len(sub_all)}，计划号 {sub_steady['标准_计划号'].nunique()} 个）"
         )
     else:
-        st.warning(f"🎯 **核心借鉴依据 — 线速度**：当前数据中未检测到线速度列，请核对稳态样本（{len(sub_steady)} / {len(sub_all)} 点）。")
+        st.info(f"稳态样本 {len(sub_steady)} / 全量 {len(sub_all)}，计划号 {sub_steady['标准_计划号'].nunique()} 个")
 
-    # 2. 上方固定值参数汇总表：泵速度 & 刀距（涂布头现位置）
+    pdf_bytes = build_single_page_pdf(model_label, sub_steady, sub_all, numeric_cols)
+    st.download_button(
+        label=f"导出 {model_label} 稳态报表（单页 PDF）",
+        data=pdf_bytes,
+        file_name=f"稳态工艺报表_{model_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+        mime="application/pdf",
+    )
+
     fixed_cols = [
         c for c in numeric_cols
         if ("泵速度" in c) or ("刀距" in c) or ("涂布头现位置" in c) or ("现位置" in c)
     ]
     if fixed_cols:
-        st.markdown("#### 📌 泵速度与刀距（涂布头现位置）稳态汇总")
+        st.markdown("#### 泵速度与刀距（涂布头现位置）")
         fixed_rows = []
         for c in fixed_cols:
             c_mean = float(mean_row[c]) if pd.notna(mean_row[c]) else np.nan
@@ -524,24 +687,21 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
             else:
                 param_type = "刀距"
             fixed_rows.append({
-                "参数类别": param_type,
-                "工艺参数": c,
-                "稳态均值": round(c_mean, 3) if pd.notna(c_mean) else np.nan,
-                "稳态标准差": round(c_std, 4) if pd.notna(c_std) else np.nan,
+                "类别": param_type,
+                "参数": c,
+                "均值": round(c_mean, 3) if pd.notna(c_mean) else np.nan,
+                "标准差": round(c_std, 4) if pd.notna(c_std) else np.nan,
                 "最小值": round(c_min, 3) if pd.notna(c_min) else np.nan,
                 "最大值": round(c_max, 3) if pd.notna(c_max) else np.nan,
             })
         st.dataframe(pd.DataFrame(fixed_rows), use_container_width=True, hide_index=True)
 
-    st.markdown("---")
-
-    # 3. 烘箱温度 1~8 节（上下放在一起）
-    st.markdown("#### 🌡️ 烘箱温度 1~8 节分布（上层/A侧 与 下层/B侧 上下对照）")
+    st.markdown("#### 烘箱温度 1~8 节（上/A 与 下/B）")
     temp_specs = [("温度PV", "{side}{z}烘箱温度PV", "#d62728"), ("温度SV", "{side}{z}烘箱温度SV", "#ff7f0e")]
     fig_temp = build_stacked_up_down_chart(
         row_series=mean_row,
-        title_top=f"{model_label} - 上层 / A侧 烘箱温度 1~8 节均值",
-        title_bot=f"{model_label} - 下层 / B侧 烘箱温度 1~8 节均值",
+        title_top=f"{model_label} 上/A 烘箱温度 1~8 节",
+        title_bot=f"{model_label} 下/B 烘箱温度 1~8 节",
         top_specs=temp_specs,
         bot_specs=[("温度PV", "{side}{z}烘箱温度PV", "#1f77b4"), ("温度SV", "{side}{z}烘箱温度SV", "#17becf")],
         y_label_top="温度 (℃)",
@@ -552,8 +712,7 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
     st.plotly_chart(fig_temp, use_container_width=True, config={"scrollZoom": False})
     st.dataframe(build_zone_data_table(mean_row, temp_specs, max_zones=8), use_container_width=True, hide_index=True)
 
-    # 4. 风频 / 鼓风机转速 1~8 节（上下放在一起）
-    st.markdown("#### 💨 鼓风机风速/风频 1~8 节分布（供应与排气、上/下侧 上下对照）")
+    st.markdown("#### 鼓风机 1~8 节（供应与排气、上/下）")
     fan_top_specs = [
         ("供应鼓风机", "{side}{z}供应鼓风机", "#2ca02c"),
         ("供应RPMSV", "{side}{z}供应鼓风机RPMSV", "#98df8a"),
@@ -568,8 +727,8 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
     ]
     fig_fan = build_stacked_up_down_chart(
         row_series=mean_row,
-        title_top=f"{model_label} - 上层 / A侧 供应与排气鼓风机 1~8 节均值",
-        title_bot=f"{model_label} - 下层 / B侧 供应与排气鼓风机 1~8 节均值",
+        title_top=f"{model_label} 上/A 鼓风机 1~8 节",
+        title_bot=f"{model_label} 下/B 鼓风机 1~8 节",
         top_specs=fan_top_specs,
         bot_specs=fan_bot_specs,
         y_label_top="转速 / 频率",
@@ -587,14 +746,13 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
     )
     st.dataframe(fan_rows_df, use_container_width=True, hide_index=True)
 
-    # 5. NMP 浓度 1~8 节（若存在则上下对照展示）
     nmp_cols = [c for c in numeric_cols if "NMP浓度" in c]
     if nmp_cols:
-        st.markdown("#### 🧪 NMP 浓度 1~8 节分布（A/B 侧上下对照）")
+        st.markdown("#### NMP 浓度 1~8 节（A/B 侧）")
         fig_nmp = build_stacked_up_down_chart(
             row_series=mean_row,
-            title_top=f"{model_label} - A侧 NMP 浓度 1~8 节均值",
-            title_bot=f"{model_label} - B侧 NMP 浓度 1~8 节均值",
+            title_top=f"{model_label} A侧 NMP 浓度 1~8 节",
+            title_bot=f"{model_label} B侧 NMP 浓度 1~8 节",
             top_specs=[("NMP浓度", "NMP浓度{side}{z}", "#e377c2")],
             bot_specs=[("NMP浓度", "NMP浓度{side}{z}", "#7f7f7f")],
             y_label_top="NMP 浓度",
@@ -609,57 +767,50 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
             hide_index=True,
         )
 
-    # 6. 其他同类工艺参数分组汇总（供料/张力/涂布尺寸等）
     other_cols = [
         c for c in numeric_cols
         if not any(k in c for k in ["烘箱温度", "供应鼓风机", "排气鼓风机", "NMP浓度"])
     ]
     if other_cols:
-        st.markdown("#### ⚙️ 涂布供料、张力与尺寸控制参数（同类归集）")
+        st.markdown("#### 其他工艺参数")
         col_g1, col_g2 = st.columns(2)
         pump_grp = [c for c in other_cols if any(k in c for k in ["泵", "浆料", "出料", "回收", "间隙阀"])]
         ctrl_grp = [c for c in other_cols if c not in pump_grp]
 
         with col_g1:
             if pump_grp:
-                fig_p = build_group_bar_chart(mean_row, pump_grp[:12], f"{model_label} - 供料/泵/阀参数均值", "参数值")
+                fig_p = build_group_bar_chart(mean_row, pump_grp[:12], f"{model_label} 供料与阀参数", "参数值")
                 if fig_p:
                     st.plotly_chart(fig_p, use_container_width=True, config={"scrollZoom": False})
         with col_g2:
             if ctrl_grp:
-                fig_c = build_group_bar_chart(mean_row, ctrl_grp[:12], f"{model_label} - 线速/张力/涂布尺寸均值", "参数值")
+                fig_c = build_group_bar_chart(mean_row, ctrl_grp[:12], f"{model_label} 速度/张力/尺寸参数", "参数值")
                 if fig_c:
                     st.plotly_chart(fig_c, use_container_width=True, config={"scrollZoom": False})
 
         rep_rows = []
         for c in other_cols:
             rep_rows.append({
-                "工艺参数": c,
-                "稳态均值": round(float(mean_row[c]), 4) if pd.notna(mean_row[c]) else np.nan,
-                "稳态标准差": round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
-                "稳态最小值": round(float(sub_steady[c].min()), 4) if sub_steady[c].notna().any() else np.nan,
-                "稳态最大值": round(float(sub_steady[c].max()), 4) if sub_steady[c].notna().any() else np.nan,
+                "参数": c,
+                "均值": round(float(mean_row[c]), 4) if pd.notna(mean_row[c]) else np.nan,
+                "标准差": round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
+                "最小值": round(float(sub_steady[c].min()), 4) if sub_steady[c].notna().any() else np.nan,
+                "最大值": round(float(sub_steady[c].max()), 4) if sub_steady[c].notna().any() else np.nan,
             })
         st.dataframe(pd.DataFrame(rep_rows), use_container_width=True, hide_index=True)
 
-# ==================== 初始化状态 ====================
+
 if "raw_log_df" not in st.session_state:
     st.session_state.raw_log_df = generate_demo_log_df()
 
 with st.sidebar:
-    st.title("📥 机台 Log 导入与解析")
+    st.markdown("### 机台 Log 导入")
     uploaded_files = st.file_uploader(
         "导入标准化机台 Log (.xlsx / .csv)",
         type=["xlsx", "csv"],
         accept_multiple_files=True,
     )
     append_mode = st.checkbox("多文件追加合并（关闭则覆盖当前数据）", value=False)
-
-    if st.button("恢复示例机台 Log"):
-        st.session_state.raw_log_df = generate_demo_log_df()
-        st.session_state.has_user_import = False
-        st.session_state.pop("last_batch_sig", None)
-        st.rerun()
 
     if uploaded_files:
         imported_list = []
@@ -685,8 +836,14 @@ with st.sidebar:
                 st.session_state.last_batch_sig = batch_sig
                 st.success(f"已导入 {len(imported_list)} 个文件，共 {len(combined_new)} 行原始记录。")
 
+    if st.button("恢复示例机台 Log"):
+        st.session_state.raw_log_df = generate_demo_log_df()
+        st.session_state.has_user_import = False
+        st.session_state.pop("last_batch_sig", None)
+        st.rerun()
+
     st.divider()
-    st.markdown("### 🔤 计划号编码规则")
+    st.markdown("### 计划号规则")
     st.caption("第 1 位：正/负极 ｜ 第 2~3 位：产品型号（如 `HE`）")
     strip_leading = st.checkbox("自动忽略开头的 `'`、`\"`、`*`、`#` 等无意义符号（保留 `+`、`-`）", value=True)
     pos_text = st.text_input("正极首字符集合（逗号分隔）", value="+")
@@ -694,13 +851,13 @@ with st.sidebar:
     pos_chars = {x.strip().upper() for x in pos_text.split(",") if x.strip()}
     neg_chars = {x.strip().upper() for x in neg_text.split(",") if x.strip()}
 
-st.title("📊 机台原始 Log 稳态工艺可视化报表系统")
-st.markdown("支持多文件批量导入、自动屏蔽停机/波动时段，并按**不同产品型号独立标签页**展示同类参数（温度、风频/风速 1~8 节上下对照等）工艺报表。")
+st.title("机台 Log 稳态工艺报表")
+st.caption("按产品型号分标签展示稳态工艺参数与 1~8 节对照")
 
 raw_df = st.session_state.raw_log_df
 all_cols = list(raw_df.columns)
 
-with st.expander("🧭 字段映射确认（如列名与默认不同，请在此选择对应列）", expanded=False):
+with st.expander("字段映射", expanded=False):
     c_m1, c_m2 = st.columns(2)
     default_plan_idx = 0
     for i, c in enumerate(all_cols):
@@ -721,7 +878,7 @@ with st.expander("🧭 字段映射确认（如列名与默认不同，请在此
 
 std_df, numeric_cols = standardize_logs(raw_df, plan_col, time_col, strip_leading, pos_chars, neg_chars)
 
-with st.expander("🛡️ 停机与不稳定时段屏蔽规则", expanded=False):
+with st.expander("稳态过滤规则", expanded=False):
     r1, r2, r3, r4 = st.columns(4)
     default_spd_idx = 0
     for i, c in enumerate(numeric_cols):
@@ -730,10 +887,11 @@ with st.expander("🛡️ 停机与不稳定时段屏蔽规则", expanded=False)
             break
 
     with r1:
-        speed_col = st.selectbox("车速/线速列（用于判停机）", ["无"] + numeric_cols, index=default_spd_idx + 1 if numeric_cols else 0)
-        min_speed = st.number_input("稳态最低车速阈值", min_value=0.0, value=10.0, step=1.0)
+        speed_col = st.selectbox("线速度列（判停机/调速）", ["无"] + numeric_cols, index=default_spd_idx + 1 if numeric_cols else 0)
+        min_speed = st.number_input("稳态最低线速度阈值", min_value=0.0, value=20.0, step=1.0)
+        max_speed_span = st.number_input("最大允许线速度跨度", min_value=0.5, value=5.0, step=0.5)
     with r2:
-        max_speed_jump = st.number_input("最大允许相邻车速跳变", min_value=0.1, value=3.0, step=0.5)
+        max_speed_jump = st.number_input("最大允许相邻线速度跳变", min_value=0.1, value=3.0, step=0.5)
         buffer_rows = st.number_input("启停/波动前后剔除缓冲时间点", min_value=0, value=1, step=1)
     with r3:
         default_watch = [c for c in numeric_cols if any(k in c for k in ["线速", "线速度", "泵速度", "温度PV"])][:3]
@@ -752,6 +910,7 @@ checked_df = filter_unstable_segments(
     std_df,
     speed_col=None if speed_col == "无" else speed_col,
     min_speed=min_speed,
+    max_speed_span=max_speed_span,
     max_speed_jump=max_speed_jump,
     buffer_rows=int(buffer_rows),
     watch_cols=watch_cols,
@@ -788,20 +947,20 @@ view_summary = build_summary_table(
     group_by_plan=group_by_plan,
 )
 
-model_tabs_labels = [f"🧩 型号：{m}" for m in sel_mod] if sel_mod else ["🧩 型号报表"]
+model_tabs_labels = [f"型号：{m}" for m in sel_mod] if sel_mod else ["型号报表"]
 top_tabs = st.tabs(
     model_tabs_labels
     + [
-        "📊 多文件/多产品汇总表",
-        "🚫 已屏蔽停机/波动审计",
-        "📋 标准化明细与导出",
+        "汇总表",
+        "过滤记录",
+        "明细与导出",
     ]
 )
 
 if sel_mod:
     for idx, m_code in enumerate(sel_mod):
         with top_tabs[idx]:
-            st.subheader(f"产品型号【{m_code}】稳态工艺可视化报表")
+            st.subheader(f"型号 {m_code}")
             m_steady = view_steady[view_steady["产品型号"] == m_code].copy()
             m_all = view_all[view_all["产品型号"] == m_code].copy()
             render_model_report_page(m_steady, m_all, numeric_cols, model_label=m_code)
@@ -809,19 +968,19 @@ if sel_mod:
 base_idx = len(model_tabs_labels)
 
 with top_tabs[base_idx]:
-    st.subheader("多文件 / 多产品稳态工艺参数汇总表")
+    st.subheader("稳态参数汇总")
     if view_summary.empty:
         st.warning("当前筛选条件下暂无稳态数据。")
     else:
         if split_by_file and "来源文件" in view_summary.columns and view_summary["来源文件"].nunique() > 1:
             for fn_val, sub_sum in view_summary.groupby("来源文件", dropna=False):
-                with st.expander(f"📄 文件：{fn_val}（共 {len(sub_sum)} 个分组）", expanded=True):
+                with st.expander(f"{fn_val}（{len(sub_sum)} 组）", expanded=True):
                     st.dataframe(sub_sum, use_container_width=True, hide_index=True)
         else:
             st.dataframe(view_summary, use_container_width=True, hide_index=True)
 
 with top_tabs[base_idx + 1]:
-    st.subheader("已屏蔽的停机 / 启停过渡 / 参数波动记录")
+    st.subheader("已过滤记录")
     removed_df = view_all[~view_all["是否稳态"]].copy()
     if removed_df.empty:
         st.info("当前筛选范围内没有被屏蔽的不稳定记录。")
@@ -832,12 +991,12 @@ with top_tabs[base_idx + 1]:
         st.dataframe(removed_df, use_container_width=True, hide_index=True)
 
 with top_tabs[base_idx + 2]:
-    st.subheader("标准化宽表明细与结果导出")
+    st.subheader("明细与导出")
     excel_bytes = to_excel_bytes(view_all, view_steady, view_summary)
     d1, d2 = st.columns(2)
     with d1:
         st.download_button(
-            label="📥 导出完整整理结果 (.xlsx)",
+            label="导出完整结果 (.xlsx)",
             data=excel_bytes,
             file_name=f"机台Log稳态报表_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -845,7 +1004,7 @@ with top_tabs[base_idx + 2]:
         )
     with d2:
         st.download_button(
-            label="📥 仅导出稳态工艺汇总表 (.csv)",
+            label="导出汇总表 (.csv)",
             data=view_summary.to_csv(index=False).encode("utf-8-sig"),
             file_name=f"稳态工艺汇总_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
             mime="text/csv",
