@@ -535,21 +535,42 @@ def to_excel_bytes(std_df: pd.DataFrame, steady_df: pd.DataFrame, sum_df: pd.Dat
     return buf.getvalue()
 
 
-def _fallback_minimal_pdf(lines: list[str]) -> bytes:
+def _fallback_minimal_pdf(header_line: str, sub_line: str, param_lines: list[str]) -> bytes:
     def esc_pdf(s: str) -> str:
         s_ascii = str(s).encode("ascii", "replace").decode("ascii")
         return s_ascii.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
-    y = 550
-    ops = ["BT", "/F1 13 Tf", f"36 {y} Td", f"({esc_pdf(lines[0] if lines else 'Steady Report')}) Tj"]
-    y -= 24
-    ops.append("/F1 9 Tf")
-    for ln in lines[1:42]:
-        ops.append(f"36 {y} Td")
-        ops.append(f"({esc_pdf(ln)}) Tj")
-        y -= 12
-        if y < 36:
-            break
+    # A4 横向 (842 x 595 pt)，使用相对 Td 移动光标，支持多列排列
+    ops = [
+        "BT",
+        "/F1 13 Tf",
+        "32 562 Td",
+        f"({esc_pdf(header_line)}) Tj",
+        "/F1 8.5 Tf",
+        "0 -15 Td",
+        f"({esc_pdf(sub_line)}) Tj",
+    ]
+    cur_x, cur_y = 32.0, 547.0
+    col_starts = [32.0, 305.0, 578.0]
+    row_step = 13.0
+    max_rows_per_col = 38
+
+    for idx_p, p_line in enumerate(param_lines[: max_rows_per_col * len(col_starts)]):
+        col_i = idx_p // max_rows_per_col
+        row_i = idx_p % max_rows_per_col
+        if row_i == 0:
+            target_x = col_starts[col_i]
+            target_y = 524.0
+        else:
+            target_x = col_starts[col_i]
+            target_y = 524.0 - row_i * row_step
+
+        dx = target_x - cur_x
+        dy = target_y - cur_y
+        ops.append(f"{dx:.1f} {dy:.1f} Td")
+        ops.append(f"({esc_pdf(p_line)}) Tj")
+        cur_x, cur_y = target_x, target_y
+
     ops.append("ET")
     stream_data = ("\n".join(ops)).encode("latin-1", "replace")
 
@@ -594,14 +615,17 @@ def build_single_page_pdf(
 ) -> bytes:
     mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
     std_row = sub_steady[numeric_cols].std(numeric_only=True)
-    lines = [
-        f"Steady Process Report - Model {model_label}",
-        f"Steady: {len(sub_steady)}/{len(sub_all)} | Plans: {sub_steady['标准_计划号'].nunique()} | Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-    ]
-    for col in numeric_cols[:35]:
+    header_line = f"Steady Process Report - Model {model_label}"
+    sub_line = (
+        f"Steady: {len(sub_steady)}/{len(sub_all)} | "
+        f"Plans: {sub_steady['标准_计划号'].nunique()} | "
+        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    )
+    param_lines = []
+    for col in numeric_cols[:114]:
         m_v = f"{float(mean_row[col]):.2f}" if pd.notna(mean_row[col]) else "-"
         s_v = f"{float(std_row[col]):.3f}" if pd.notna(std_row[col]) else "-"
-        lines.append(f"{col}: Mean={m_v}, SD={s_v}")
+        param_lines.append(f"{col}: Mean={m_v}, SD={s_v}")
 
     try:
         from reportlab.pdfgen import canvas as rl_canvas
@@ -611,20 +635,24 @@ def build_single_page_pdf(
         w, h = landscape(A4)
         c = rl_canvas.Canvas(buf, pagesize=(w, h))
         c.setFont("Helvetica-Bold", 13)
-        c.drawString(30, h - 36, f"Steady Process Report - Model {model_label}")
+        c.drawString(32, h - 34, header_line)
         c.setFont("Helvetica", 8.5)
-        y = h - 56
-        for ln in lines[1:]:
-            c.drawString(30, y, str(ln).encode("ascii", "replace").decode("ascii"))
-            y -= 13
-            if y < 30:
-                break
+        c.drawString(32, h - 50, sub_line)
+
+        col_x = [32, 305, 578]
+        row_h = 12.5
+        max_rows = 38
+        for idx_p, p_line in enumerate(param_lines[: max_rows * len(col_x)]):
+            ci = idx_p // max_rows
+            ri = idx_p % max_rows
+            y = h - 72 - ri * row_h
+            c.drawString(col_x[ci], y, str(p_line).encode("ascii", "replace").decode("ascii"))
         c.showPage()
         c.save()
         buf.seek(0)
         return buf.getvalue()
     except Exception:
-        return _fallback_minimal_pdf(lines)
+        return _fallback_minimal_pdf(header_line, sub_line, param_lines)
 
 
 def render_model_report_page(
@@ -665,7 +693,6 @@ def render_model_report_page(
     else:
         st.info(f"稳态样本 {len(sub_steady)} / 全量 {len(sub_all)}，计划号 {sub_steady['标准_计划号'].nunique()} 个")
 
-    # 按需生成单页 PDF，避免每次筛选都生成所有型号的 PDF 字节流
     pdf_key = f"pdf_bytes_{model_label}"
     if st.button(f"生成 {model_label} 单页 PDF", key=f"gen_pdf_{model_label}"):
         st.session_state[pdf_key] = build_single_page_pdf(model_label, sub_steady, sub_all, numeric_cols)
@@ -977,7 +1004,6 @@ if st.session_state.get("last_chart_avail_sig") != avail_sig:
 
 applied_cfg = st.session_state.applied_chart_cfg
 
-# 使用 st.form 隔离选择过程，选择多条曲线/坐标时不会触发实时重算与重绘
 with st.expander("温度及鼓风机折线图选择与主次坐标配置", expanded=True):
     with st.form("chart_axis_form"):
         c_t1, c_t2 = st.columns(2)
@@ -1025,7 +1051,6 @@ mask_view = (
 view_all = checked_df[mask_view].copy()
 view_steady = view_all[view_all["是否稳态"]].copy()
 
-# 渲染模式：单型号聚焦渲染（默认仅渲染当前选中型号，减少多型号同时绘图的卡顿）或全部型号标签页
 render_mode = st.radio(
     "型号报表渲染方式（筛选多型号时建议“单型号聚焦”，响应更快）",
     ["单型号聚焦渲染", "全部型号同时渲染"],
