@@ -467,20 +467,56 @@ def build_zone_data_table(
     return pd.DataFrame(table_rows)
 
 
-def _get_cjk_font_prop():
-    import matplotlib.font_manager as fm
-    candidates = [
-        "Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK TC",
-        "Droid Sans Fallback", "WenQuanYi Micro Hei", "SimHei", "Arial Unicode MS",
+def _fallback_minimal_pdf(lines: list[str]) -> bytes:
+    """无第三方库时的纯 Python 单页 A4 横向 PDF 生成器"""
+    def esc_pdf(s: str) -> str:
+        s_ascii = str(s).encode("ascii", "replace").decode("ascii")
+        return s_ascii.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+    y = 550
+    ops = ["BT", "/F1 13 Tf", f"36 {y} Td", f"({esc_pdf(lines[0] if lines else 'Steady Report')}) Tj"]
+    y -= 24
+    ops.append("/F1 9 Tf")
+    for ln in lines[1:42]:
+        ops.append(f"36 {y} Td")
+        ops.append(f"({esc_pdf(ln)}) Tj")
+        y -= 12
+        if y < 36:
+            break
+    ops.append("ET")
+    stream_data = ("\n".join(ops)).encode("latin-1", "replace")
+
+    objects = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        (
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] "
+            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n"
+        ),
+        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+        (
+            f"5 0 obj\n<< /Length {len(stream_data)} >>\nstream\n".encode("ascii")
+            + stream_data
+            + b"\nendstream\nendobj\n"
+        ),
     ]
-    available = {f.name for f in fm.fontManager.ttflist}
-    for name in candidates:
-        if name in available:
-            return fm.FontProperties(family=name)
-    for f in fm.fontManager.ttflist:
-        if any(k in f.name.lower() for k in ["cjk", "fallback", "noto sans", "wqy"]):
-            return fm.FontProperties(fname=f.fname)
-    return fm.FontProperties()
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for obj in objects:
+        offsets.append(len(out))
+        out.extend(obj)
+
+    xref_pos = len(out)
+    out.extend(f"xref\n0 {len(offsets)}\n".encode("ascii"))
+    out.extend(b"0000000000 65535 f \n")
+    for off in offsets[1:]:
+        out.extend(f"{off:010d} 00000 n \n".encode("ascii"))
+
+    out.extend(
+        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode("ascii")
+    )
+    return bytes(out)
 
 
 def build_single_page_pdf(
@@ -489,146 +525,177 @@ def build_single_page_pdf(
     sub_all: pd.DataFrame,
     numeric_cols: list[str],
 ) -> bytes:
-    """将单个型号的稳态工艺可视化报表渲染为一页横向 A4 PDF"""
-    import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_pdf import PdfPages
+    """将单个型号的稳态工艺可视化报表渲染为一页横向 A4 PDF（无 matplotlib 依赖）"""
+    mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
+    std_row = sub_steady[numeric_cols].std(numeric_only=True)
 
-    font_prop = _get_cjk_font_prop()
-    buf = io.BytesIO()
-    with PdfPages(buf) as pdf:
-        fig = plt.figure(figsize=(11.69, 8.27), dpi=150)
-        fig.patch.set_facecolor("white")
+    spd_candidates = [c for c in numeric_cols if any(k in c for k in ["线速度", "线速", "车速", "速度"]) and "阀" not in c and "泵" not in c]
+    if not spd_candidates:
+        spd_candidates = [c for c in numeric_cols if any(k in c for k in ["线速度", "线速", "车速"])]
 
-        mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
-        std_row = sub_steady[numeric_cols].std(numeric_only=True)
+    if spd_candidates:
+        scol = spd_candidates[0]
+        s_mean = float(mean_row[scol]) if pd.notna(mean_row[scol]) else np.nan
+        s_std = float(std_row[scol]) if pd.notna(std_row[scol]) else np.nan
+        s_min = float(sub_steady[scol].min()) if sub_steady[scol].notna().any() else np.nan
+        s_max = float(sub_steady[scol].max()) if sub_steady[scol].notna().any() else np.nan
+        summary_line = (
+            f"Model: {model_label} | {scol} Mean: {s_mean:.2f} (SD {s_std:.2f}, Range {s_min:.2f}~{s_max:.2f}) | "
+            f"Steady: {len(sub_steady)}/{len(sub_all)} | Plans: {sub_steady['标准_计划号'].nunique()} | "
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
+    else:
+        summary_line = (
+            f"Model: {model_label} | Steady: {len(sub_steady)}/{len(sub_all)} | "
+            f"Plans: {sub_steady['标准_计划号'].nunique()} | "
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
 
-        spd_candidates = [c for c in numeric_cols if any(k in c for k in ["线速度", "线速", "车速", "速度"]) and "阀" not in c and "泵" not in c]
-        if not spd_candidates:
-            spd_candidates = [c for c in numeric_cols if any(k in c for k in ["线速度", "线速", "车速"])]
+    try:
+        from reportlab.pdfgen import canvas as rl_canvas
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib import colors
 
-        if spd_candidates:
-            scol = spd_candidates[0]
-            s_mean = float(mean_row[scol]) if pd.notna(mean_row[scol]) else np.nan
-            s_std = float(std_row[scol]) if pd.notna(std_row[scol]) else np.nan
-            s_min = float(sub_steady[scol].min()) if sub_steady[scol].notna().any() else np.nan
-            s_max = float(sub_steady[scol].max()) if sub_steady[scol].notna().any() else np.nan
-            summary_line = (
-                f"型号: {model_label}  |  {scol} 稳态均值: {s_mean:.2f} (SD {s_std:.2f}, 区间 {s_min:.2f}~{s_max:.2f})  |  "
-                f"稳态样本: {len(sub_steady)}/{len(sub_all)}  |  计划号: {sub_steady['标准_计划号'].nunique()} 个  |  "
-                f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            )
-        else:
-            summary_line = (
-                f"型号: {model_label}  |  稳态样本: {len(sub_steady)}/{len(sub_all)}  |  "
-                f"计划号: {sub_steady['标准_计划号'].nunique()} 个  |  "
-                f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            )
+        buf = io.BytesIO()
+        w, h = landscape(A4)
+        c = rl_canvas.Canvas(buf, pagesize=(w, h))
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(28, h - 34, f"Steady Process Report - Model {model_label}")
+        c.setFont("Helvetica", 8.5)
+        c.setFillColor(colors.HexColor("#374151"))
+        c.drawString(28, h - 50, summary_line.encode("ascii", "replace").decode("ascii"))
+        c.setFillColor(colors.black)
 
-        fig.text(0.03, 0.96, f"型号 {model_label} 稳态工艺报表", fontsize=14, fontweight="bold", fontproperties=font_prop)
-        fig.text(0.03, 0.925, summary_line, fontsize=8.5, color="#374151", fontproperties=font_prop)
+        def _draw_mini_line_plot(x0, y0, pw, ph, series_list, title_txt):
+            c.setStrokeColor(colors.HexColor("#d1d5db"))
+            c.setLineWidth(0.8)
+            c.rect(x0, y0, pw, ph, stroke=1, fill=0)
+            c.setFont("Helvetica-Bold", 8.5)
+            c.drawString(x0 + 6, y0 + ph - 12, title_txt.encode("ascii", "replace").decode("ascii"))
 
-        gs = fig.add_gridspec(2, 2, left=0.05, right=0.97, top=0.89, bottom=0.08, wspace=0.22, hspace=0.34)
-        zones = list(range(1, 9))
-        x_idx = np.arange(len(zones))
-        x_tick_labels = [f"{z}节" for z in zones]
+            all_v = [v for _, yv, _, _ in series_list for v in yv if pd.notna(v)]
+            if not all_v:
+                c.setFont("Helvetica", 8)
+                c.drawString(x0 + 12, y0 + ph * 0.5, "No data in steady samples")
+                return
+            vmin, vmax = min(all_v), max(all_v)
+            if abs(vmax - vmin) < 1e-9:
+                vmax = vmin + 1.0
+                vmin = vmin - 1.0
 
-        ax_t = fig.add_subplot(gs[0, 0])
-        for side, lbl, col, ls in [("A", "上/A PV", "#d62728", "-"), ("B", "下/B PV", "#1f77b4", "--")]:
-            _, yv = extract_zone_series(mean_row, side, ["{side}{z}烘箱温度PV"], max_zones=8)
-            ax_t.plot(x_idx, yv, marker="o", markersize=4, linewidth=1.8, color=col, linestyle=ls, label=lbl)
-        ax_t.set_title("烘箱温度 PV 1~8 节（上/A 与 下/B）", fontsize=9.5, fontproperties=font_prop)
-        ax_t.set_xticks(x_idx)
-        ax_t.set_xticklabels(x_tick_labels, fontsize=8, fontproperties=font_prop)
-        ax_t.set_ylabel("温度 (℃)", fontsize=8.5, fontproperties=font_prop)
-        ax_t.tick_params(axis="y", labelsize=8)
-        ax_t.grid(True, linestyle=":", alpha=0.5)
-        ax_t.legend(fontsize=7.5, loc="best", prop=font_prop)
+            plot_l = x0 + 36
+            plot_r = x0 + pw - 12
+            plot_b = y0 + 22
+            plot_t = y0 + ph - 20
+            c.setStrokeColor(colors.HexColor("#9ca3af"))
+            c.line(plot_l, plot_b, plot_r, plot_b)
+            c.line(plot_l, plot_b, plot_l, plot_t)
 
-        ax_f = fig.add_subplot(gs[0, 1])
-        for side, lbl, col, ls in [
-            ("A", "上/A 供应", "#2ca02c", "-"),
-            ("B", "下/B 供应", "#008080", "--"),
-            ("A", "上/A 排气", "#9467bd", "-"),
-            ("B", "下/B 排气", "#8c564b", "--"),
-        ]:
-            _, yv = extract_zone_series(mean_row, side, ["{side}{z}供应鼓风机" if "供应" in lbl else "{side}{z}排气鼓风机"], max_zones=8)
-            ax_f.plot(x_idx, yv, marker="s", markersize=3.5, linewidth=1.6, color=col, linestyle=ls, label=lbl)
-        ax_f.set_title("鼓风机 1~8 节（供应与排气、上/下）", fontsize=9.5, fontproperties=font_prop)
-        ax_f.set_xticks(x_idx)
-        ax_f.set_xticklabels(x_tick_labels, fontsize=8, fontproperties=font_prop)
-        ax_f.set_ylabel("转速 / 频率", fontsize=8.5, fontproperties=font_prop)
-        ax_f.tick_params(axis="y", labelsize=8)
-        ax_f.grid(True, linestyle=":", alpha=0.5)
-        ax_f.legend(fontsize=7, ncol=2, loc="best", prop=font_prop)
+            c.setFont("Helvetica", 6.5)
+            c.drawString(x0 + 4, plot_t - 4, f"{vmax:.1f}")
+            c.drawString(x0 + 4, plot_b, f"{vmin:.1f}")
+            for i in range(8):
+                xi = plot_l + (plot_r - plot_l) * i / 7.0
+                c.drawString(xi - 5, y0 + 8, f"Z{i+1}")
 
-        ax_n = fig.add_subplot(gs[1, 0])
-        has_nmp = False
-        for side, lbl, col, ls in [("A", "A侧 NMP", "#e377c2", "-"), ("B", "B侧 NMP", "#7f7f7f", "--")]:
-            _, yv = extract_zone_series(mean_row, side, ["NMP浓度{side}{z}"], max_zones=8)
-            if any(pd.notna(v) for v in yv):
-                has_nmp = True
-                ax_n.plot(x_idx, yv, marker="^", markersize=4, linewidth=1.7, color=col, linestyle=ls, label=lbl)
-        if has_nmp:
-            ax_n.set_title("NMP 浓度 1~8 节（A/B 侧）", fontsize=9.5, fontproperties=font_prop)
-            ax_n.set_xticks(x_idx)
-            ax_n.set_xticklabels(x_tick_labels, fontsize=8, fontproperties=font_prop)
-            ax_n.set_ylabel("NMP 浓度", fontsize=8.5, fontproperties=font_prop)
-            ax_n.legend(fontsize=7.5, loc="best", prop=font_prop)
-        else:
-            other_cols = [c for c in numeric_cols if not any(k in c for k in ["烘箱温度", "供应鼓风机", "排气鼓风机", "NMP浓度"])][:6]
-            vals = [float(mean_row[c]) if pd.notna(mean_row[c]) else 0.0 for c in other_cols]
-            ax_n.barh(range(len(other_cols)), vals, color="#1f77b4")
-            ax_n.set_yticks(range(len(other_cols)))
-            ax_n.set_yticklabels(other_cols, fontsize=7.5, fontproperties=font_prop)
-            ax_n.set_title("稳态关键参数均值", fontsize=9.5, fontproperties=font_prop)
-        ax_n.tick_params(axis="y", labelsize=8)
-        ax_n.grid(True, linestyle=":", alpha=0.5)
+            for lbl, yv, hex_col, is_dash in series_list:
+                c.setStrokeColor(colors.HexColor(hex_col))
+                c.setLineWidth(1.5)
+                if is_dash:
+                    c.setDash(4, 2)
+                else:
+                    c.setDash()
+                pts = []
+                for i, v in enumerate(yv):
+                    if pd.notna(v):
+                        xi = plot_l + (plot_r - plot_l) * i / 7.0
+                        yi = plot_b + (plot_t - plot_b) * (float(v) - vmin) / (vmax - vmin)
+                        pts.append((xi, yi))
+                for k in range(len(pts) - 1):
+                    c.line(pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1])
+                for px, py in pts:
+                    c.circle(px, py, 2.2, stroke=1, fill=1)
+            c.setDash()
 
-        ax_tb = fig.add_subplot(gs[1, 1])
-        ax_tb.axis("off")
-        ax_tb.set_title("稳态参数统计摘要", fontsize=9.5, fontproperties=font_prop, loc="left")
+        _, t_a = extract_zone_series(mean_row, "A", ["{side}{z}烘箱温度PV"], 8)
+        _, t_b = extract_zone_series(mean_row, "B", ["{side}{z}烘箱温度PV"], 8)
+        _draw_mini_line_plot(
+            28, 305, 390, 225,
+            [("A PV", t_a, "#d62728", False), ("B PV", t_b, "#1f77b4", True)],
+            "Oven Temp PV Zone 1-8 (A / B)",
+        )
+
+        _, f_a_sup = extract_zone_series(mean_row, "A", ["{side}{z}供应鼓风机"], 8)
+        _, f_b_sup = extract_zone_series(mean_row, "B", ["{side}{z}供应鼓风机"], 8)
+        _, f_a_exh = extract_zone_series(mean_row, "A", ["{side}{z}排气鼓风机"], 8)
+        _, f_b_exh = extract_zone_series(mean_row, "B", ["{side}{z}排气鼓风机"], 8)
+        _draw_mini_line_plot(
+            430, 305, 384, 225,
+            [
+                ("A Sup", f_a_sup, "#2ca02c", False),
+                ("B Sup", f_b_sup, "#008080", True),
+                ("A Exh", f_a_exh, "#9467bd", False),
+                ("B Exh", f_b_exh, "#8c564b", True),
+            ],
+            "Blower Supply / Exhaust Zone 1-8",
+        )
+
+        _, n_a = extract_zone_series(mean_row, "A", ["NMP浓度{side}{z}"], 8)
+        _, n_b = extract_zone_series(mean_row, "B", ["NMP浓度{side}{z}"], 8)
+        _draw_mini_line_plot(
+            28, 35, 390, 250,
+            [("A NMP", n_a, "#e377c2", False), ("B NMP", n_b, "#7f7f7f", True)],
+            "NMP Concentration Zone 1-8 (A / B)",
+        )
+
+        # 右下：稳态参数统计摘要
+        rx0, ry0, rw, rh = 430, 35, 384, 250
+        c.setStrokeColor(colors.HexColor("#d1d5db"))
+        c.rect(rx0, ry0, rw, rh, stroke=1, fill=0)
+        c.setFont("Helvetica-Bold", 8.5)
+        c.drawString(rx0 + 6, ry0 + rh - 14, "Steady Parameter Summary")
 
         key_cols = [
-            c for c in numeric_cols
-            if any(k in c for k in ["线速度", "线速", "车速", "泵速度", "刀距", "涂布头现位置", "放卷张力", "出料张力"])
-        ][:8]
+            col for col in numeric_cols
+            if any(k in col for k in ["线速度", "线速", "车速", "泵速度", "刀距", "涂布头现位置", "放卷张力", "出料张力"])
+        ][:10]
         if not key_cols:
-            key_cols = numeric_cols[:8]
+            key_cols = numeric_cols[:10]
 
-        cell_text = []
-        for c in key_cols:
-            c_mean = f"{float(mean_row[c]):.2f}" if pd.notna(mean_row[c]) else "-"
-            c_std = f"{float(std_row[c]):.3f}" if pd.notna(std_row[c]) else "-"
+        y_cur = ry0 + rh - 30
+        c.setFont("Helvetica-Bold", 7.5)
+        c.drawString(rx0 + 8, y_cur, "Parameter")
+        c.drawString(rx0 + 185, y_cur, "Mean")
+        c.drawString(rx0 + 235, y_cur, "SD")
+        c.drawString(rx0 + 280, y_cur, "Range")
+        y_cur -= 14
+        c.setFont("Helvetica", 7.5)
+        for col in key_cols:
+            c_mean = f"{float(mean_row[col]):.2f}" if pd.notna(mean_row[col]) else "-"
+            c_std = f"{float(std_row[col]):.3f}" if pd.notna(std_row[col]) else "-"
             c_rng = (
-                f"{float(sub_steady[c].min()):.2f}~{float(sub_steady[c].max()):.2f}"
-                if sub_steady[c].notna().any()
+                f"{float(sub_steady[col].min()):.2f}~{float(sub_steady[col].max()):.2f}"
+                if sub_steady[col].notna().any()
                 else "-"
             )
-            cell_text.append([str(c)[:18], c_mean, c_std, c_rng])
+            p_lbl = str(col).encode("ascii", "replace").decode("ascii")[:28]
+            c.drawString(rx0 + 8, y_cur, p_lbl)
+            c.drawString(rx0 + 185, y_cur, c_mean)
+            c.drawString(rx0 + 235, y_cur, c_std)
+            c.drawString(rx0 + 280, y_cur, c_rng)
+            y_cur -= 18
 
-        if cell_text:
-            tbl = ax_tb.table(
-                cellText=cell_text,
-                colLabels=["参数", "均值", "标准差", "区间"],
-                colWidths=[0.42, 0.18, 0.16, 0.24],
-                loc="center",
-                cellLoc="center",
-            )
-            tbl.auto_set_font_size(False)
-            tbl.set_fontsize(7.5)
-            tbl.scale(1.0, 1.25)
-            for (r_i, c_i), cell in tbl.get_celld().items():
-                cell.set_edgecolor("#d1d5db")
-                cell.get_text().set_fontproperties(font_prop)
-                if r_i == 0:
-                    cell.set_facecolor("#f3f4f6")
-                    cell.get_text().set_weight("bold")
-
-        pdf.savefig(fig)
-        plt.close(fig)
-
-    buf.seek(0)
-    return buf.getvalue()
+        c.showPage()
+        c.save()
+        buf.seek(0)
+        return buf.getvalue()
+    except Exception:
+        lines = [f"Steady Process Report - Model {model_label}", summary_line]
+        for col in numeric_cols[:25]:
+            m_v = f"{float(mean_row[col]):.2f}" if pd.notna(mean_row[col]) else "-"
+            s_v = f"{float(std_row[col]):.3f}" if pd.notna(std_row[col]) else "-"
+            lines.append(f"{col}: Mean={m_v}, SD={s_v}")
+        return _fallback_minimal_pdf(lines)
 
 
 def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, numeric_cols: list[str], model_label: str):
