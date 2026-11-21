@@ -51,6 +51,8 @@ def generate_demo_log_df() -> pd.DataFrame:
                 ("线速度", spd),
                 ("A泵速度", pump),
                 ("B泵速度", round(pump + 0.4, 2)),
+                ("涂布头现位置", round(0.12 + rng.normal(0, 0.005), 3)),
+                ("刀距", round(0.15 + rng.normal(0, 0.005), 3)),
                 ("A泵压力", round(12.5 + rng.normal(0, 0.05), 2)),
                 ("B泵压力", round(12.8 + rng.normal(0, 0.05), 2)),
                 ("放卷张力", round(35.0 + rng.normal(0, 0.2), 1)),
@@ -467,6 +469,39 @@ def build_tension_chart(row_series: pd.Series, tension_cols: list[str], title: s
     return fig
 
 
+def build_pump_gap_dataframe(
+    sub_steady: pd.DataFrame,
+    numeric_cols: list[str],
+    mean_row: pd.Series,
+    std_row: pd.Series,
+) -> pd.DataFrame:
+    fixed_cols = [
+        c for c in numeric_cols
+        if ("泵速度" in c) or ("刀距" in c) or ("涂布头现位置" in c) or ("现位置" in c)
+    ]
+    fixed_rows = []
+    for c in fixed_cols:
+        c_mean = float(mean_row[c]) if pd.notna(mean_row[c]) else np.nan
+        c_std = float(std_row[c]) if pd.notna(std_row[c]) else np.nan
+        c_min = float(sub_steady[c].min()) if sub_steady[c].notna().any() else np.nan
+        c_max = float(sub_steady[c].max()) if sub_steady[c].notna().any() else np.nan
+        if "泵速度" in c:
+            param_type = "泵速度"
+        elif "涂布头现位置" in c or "现位置" in c:
+            param_type = "刀距（涂布头现位置）"
+        else:
+            param_type = "刀距"
+        fixed_rows.append({
+            "类别": param_type,
+            "参数": c,
+            "均值": round(c_mean, 3) if pd.notna(c_mean) else np.nan,
+            "标准差": round(c_std, 4) if pd.notna(c_std) else np.nan,
+            "最小值": round(c_min, 3) if pd.notna(c_min) else np.nan,
+            "最大值": round(c_max, 3) if pd.notna(c_max) else np.nan,
+        })
+    return pd.DataFrame(fixed_rows)
+
+
 @st.cache_data(show_spinner=False)
 def build_summary_table(
     steady_df: pd.DataFrame,
@@ -551,13 +586,25 @@ def build_visual_html_report(
     fan_selected: list[str],
     fan_secondary: list[str],
 ) -> bytes:
-    """生成与筛选后可视化页面一致的中文 HTML 报告（支持浏览器直接打开或打印存为 PDF，无乱码）"""
+    """生成与筛选后可视化页面一致的中文 HTML 报告（必含泵速与刀距信息，支持打印存为 PDF）"""
     mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
     std_row = sub_steady[numeric_cols].std(numeric_only=True)
     gen_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     plans_cnt = int(sub_steady["标准_计划号"].nunique()) if "标准_计划号" in sub_steady.columns else 0
 
     chart_blocks = []
+
+    # 0. 泵速度与刀距（涂布头现位置）——必含核心版块，放在最前
+    df_pump_gap = build_pump_gap_dataframe(sub_steady, numeric_cols, mean_row, std_row)
+    if not df_pump_gap.empty:
+        chart_blocks.append(
+            f"<section class='card'><h3>泵速度与刀距（涂布头现位置）</h3>{_df_to_html_table(df_pump_gap)}</section>"
+        )
+    else:
+        chart_blocks.append(
+            "<section class='card'><h3>泵速度与刀距（涂布头现位置）</h3>"
+            "<p class='muted'>当前数据未检测到泵速度 / 刀距 / 涂布头现位置参数列。</p></section>"
+        )
 
     # 1. 张力可视化
     tension_cols = [c for c in numeric_cols if any(k in str(c) for k in ["张力", "tension", "Tension"])]
@@ -673,6 +720,7 @@ def build_visual_html_report(
     overflow-x: auto;
   }}
   .card h3 {{ margin: 0 0 12px 0; font-size: 16px; border-left: 4px solid #2563eb; padding-left: 10px; }}
+  .muted {{ color: #6b7280; font-size: 13px; }}
   .rep-table {{
     width: 100%;
     border-collapse: collapse;
@@ -744,7 +792,6 @@ def render_model_report_page(
     else:
         st.info(f"稳态样本 {len(sub_steady)} / 全量 {len(sub_all)}，计划号 {sub_steady['标准_计划号'].nunique()} 个")
 
-    # 可视化 HTML 报表（中文无乱码，支持浏览器打印/存为 PDF）
     html_key = f"vis_html_bytes_{model_label}"
     if st.button(f"生成 {model_label} 可视化报表", key=f"gen_vis_{model_label}"):
         st.session_state[html_key] = build_visual_html_report(
@@ -766,33 +813,10 @@ def render_model_report_page(
             key=f"dl_vis_{model_label}",
         )
 
-    fixed_cols = [
-        c for c in numeric_cols
-        if ("泵速度" in c) or ("刀距" in c) or ("涂布头现位置" in c) or ("现位置" in c)
-    ]
-    if fixed_cols:
+    df_pump_gap = build_pump_gap_dataframe(sub_steady, numeric_cols, mean_row, std_row)
+    if not df_pump_gap.empty:
         st.markdown("#### 泵速度与刀距（涂布头现位置）")
-        fixed_rows = []
-        for c in fixed_cols:
-            c_mean = float(mean_row[c]) if pd.notna(mean_row[c]) else np.nan
-            c_std = float(std_row[c]) if pd.notna(std_row[c]) else np.nan
-            c_min = float(sub_steady[c].min()) if sub_steady[c].notna().any() else np.nan
-            c_max = float(sub_steady[c].max()) if sub_steady[c].notna().any() else np.nan
-            if "泵速度" in c:
-                param_type = "泵速度"
-            elif "涂布头现位置" in c or "现位置" in c:
-                param_type = "刀距（涂布头现位置）"
-            else:
-                param_type = "刀距"
-            fixed_rows.append({
-                "类别": param_type,
-                "参数": c,
-                "均值": round(c_mean, 3) if pd.notna(c_mean) else np.nan,
-                "标准差": round(c_std, 4) if pd.notna(c_std) else np.nan,
-                "最小值": round(c_min, 3) if pd.notna(c_min) else np.nan,
-                "最大值": round(c_max, 3) if pd.notna(c_max) else np.nan,
-            })
-        st.dataframe(pd.DataFrame(fixed_rows), use_container_width=True, hide_index=True)
+        st.dataframe(df_pump_gap, use_container_width=True, hide_index=True)
 
     tension_cols = [c for c in numeric_cols if any(k in str(c) for k in ["张力", "tension", "Tension"])]
     if tension_cols:
