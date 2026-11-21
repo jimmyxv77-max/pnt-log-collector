@@ -98,14 +98,15 @@ def generate_demo_log_df() -> pd.DataFrame:
 def parse_plan_code(plan_val, strip_leading_symbols: bool, pos_chars: set, neg_chars: set):
     """
     解析计划号：
-    - 第1位代表正极或负极（可选先去除开头的 +、-、# 等符号）
+    - 保留开头的 +、-，仅自动忽略开头的 '、"、*、# 等无意义符号
+    - 第1位代表正极或负极
     - 第2、3位代表产品型号（如 HE）
     """
     s = str(plan_val).strip().upper() if pd.notna(plan_val) else ""
     if not s:
         return "未知极性", "未知型号"
 
-    clean_s = re.sub(r"^[+\-_#\s]+", "", s) if strip_leading_symbols else s
+    clean_s = re.sub(r"^[\'\"*#_~`./\s]+", "", s) if strip_leading_symbols else s
     if not clean_s:
         clean_s = s
 
@@ -360,8 +361,28 @@ def build_stacked_up_down_chart(
     return fig
 
 
+def build_zone_data_table(
+    row_series: pd.Series,
+    specs: list[tuple[str, str, str]],
+    max_zones: int = 8,
+    side_labels: tuple[str, str] = ("上/A", "下/B"),
+) -> pd.DataFrame:
+    """将 1~8 节上下对照图的数据整理为直观的报表表格（行=各序列，列=第1节~第8节）"""
+    cols = [f"第{z}节" for z in range(1, max_zones + 1)]
+    table_rows = []
+    for side_prefix, side_tag in [("A", side_labels[0]), ("B", side_labels[1])]:
+        for label, tmpl, _ in specs:
+            _, y_vals = extract_zone_series(row_series, side_prefix, [tmpl], max_zones=max_zones)
+            r_dict = {"侧别/参数": f"{side_tag}-{label}"}
+            for z_idx, c_name in enumerate(cols):
+                v = y_vals[z_idx]
+                r_dict[c_name] = round(float(v), 2) if pd.notna(v) else np.nan
+            table_rows.append(r_dict)
+    return pd.DataFrame(table_rows)
+
+
 def build_group_bar_chart(row_series: pd.Series, cols: list[str], title: str, y_title: str, height: int = 340):
-    """将同类工艺参数按组柱状对比"""
+    """将同类单值/多点参数（如泵速、张力、对齐度、膜长）按组柱状对比"""
     valid_cols = [c for c in cols if c in row_series.index and pd.notna(row_series[c])]
     if not valid_cols:
         return None
@@ -453,7 +474,7 @@ def to_excel_bytes(std_df: pd.DataFrame, steady_df: pd.DataFrame, sum_df: pd.Dat
 
 
 def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, numeric_cols: list[str], model_label: str):
-    """为单个产品型号渲染结构化工艺报表页面（同类参数归集 + 上下1~8节对比 + 明细表）"""
+    """为单个产品型号渲染结构化工艺报表页面（同类参数归集 + 上下1~8节对比 + 底部数据表）"""
     if sub_steady.empty:
         st.warning(f"型号 **{model_label}** 在当前筛选/稳态阈值下暂无稳态样本，请调整阈值或筛选条件。")
         return
@@ -481,48 +502,54 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
     st.markdown("---")
 
     st.markdown("#### 🌡️ 烘箱温度 1~8 节分布（上层/A侧 与 下层/B侧 上下对照）")
+    temp_specs = [("温度PV", "{side}{z}烘箱温度PV", "#d62728"), ("温度SV", "{side}{z}烘箱温度SV", "#ff7f0e")]
     fig_temp = build_stacked_up_down_chart(
         row_series=mean_row,
         title_top=f"{model_label} - 上层 / A侧 烘箱温度 1~8 节均值",
         title_bot=f"{model_label} - 下层 / B侧 烘箱温度 1~8 节均值",
-        top_specs=[
-            ("温度PV", "{side}{z}烘箱温度PV", "#d62728"),
-            ("温度SV", "{side}{z}烘箱温度SV", "#ff7f0e"),
-        ],
-        bot_specs=[
-            ("温度PV", "{side}{z}烘箱温度PV", "#1f77b4"),
-            ("温度SV", "{side}{z}烘箱温度SV", "#17becf"),
-        ],
+        top_specs=temp_specs,
+        bot_specs=[("温度PV", "{side}{z}烘箱温度PV", "#1f77b4"), ("温度SV", "{side}{z}烘箱温度SV", "#17becf")],
         y_label_top="温度 (℃)",
         y_label_bot="温度 (℃)",
         max_zones=8,
         height=540,
     )
     st.plotly_chart(fig_temp, use_container_width=True, config={"scrollZoom": False})
+    st.dataframe(build_zone_data_table(mean_row, temp_specs, max_zones=8), use_container_width=True, hide_index=True)
 
     st.markdown("#### 💨 鼓风机风速/风频 1~8 节分布（供应与排气、上/下侧 上下对照）")
+    fan_top_specs = [
+        ("供应鼓风机", "{side}{z}供应鼓风机", "#2ca02c"),
+        ("供应RPMSV", "{side}{z}供应鼓风机RPMSV", "#98df8a"),
+        ("排气鼓风机", "{side}{z}排气鼓风机", "#9467bd"),
+        ("排气RPMSV", "{side}{z}排气鼓风机RPMSV", "#c5b0d5"),
+    ]
+    fan_bot_specs = [
+        ("供应鼓风机", "{side}{z}供应鼓风机", "#008080"),
+        ("供应RPMSV", "{side}{z}供应鼓风机RPMSV", "#66c2a5"),
+        ("排气鼓风机", "{side}{z}排气鼓风机", "#8c564b"),
+        ("排气RPMSV", "{side}{z}排气鼓风机RPMSV", "#c49c94"),
+    ]
     fig_fan = build_stacked_up_down_chart(
         row_series=mean_row,
         title_top=f"{model_label} - 上层 / A侧 供应与排气鼓风机 1~8 节均值",
         title_bot=f"{model_label} - 下层 / B侧 供应与排气鼓风机 1~8 节均值",
-        top_specs=[
-            ("供应鼓风机", "{side}{z}供应鼓风机", "#2ca02c"),
-            ("供应RPMSV", "{side}{z}供应鼓风机RPMSV", "#98df8a"),
-            ("排气鼓风机", "{side}{z}排气鼓风机", "#9467bd"),
-            ("排气RPMSV", "{side}{z}排气鼓风机RPMSV", "#c5b0d5"),
-        ],
-        bot_specs=[
-            ("供应鼓风机", "{side}{z}供应鼓风机", "#008080"),
-            ("供应RPMSV", "{side}{z}供应鼓风机RPMSV", "#66c2a5"),
-            ("排气鼓风机", "{side}{z}排气鼓风机", "#8c564b"),
-            ("排气RPMSV", "{side}{z}排气鼓风机RPMSV", "#c49c94"),
-        ],
+        top_specs=fan_top_specs,
+        bot_specs=fan_bot_specs,
         y_label_top="转速 / 频率",
         y_label_bot="转速 / 频率",
         max_zones=8,
         height=560,
     )
     st.plotly_chart(fig_fan, use_container_width=True, config={"scrollZoom": False})
+    fan_rows_df = pd.concat(
+        [
+            build_zone_data_table(mean_row, fan_top_specs, max_zones=8, side_labels=("上/A", "上/B")),
+            build_zone_data_table(mean_row, fan_bot_specs, max_zones=8, side_labels=("下/A", "下/B")),
+        ],
+        ignore_index=True,
+    )
+    st.dataframe(fan_rows_df, use_container_width=True, hide_index=True)
 
     nmp_cols = [c for c in numeric_cols if "NMP浓度" in c]
     if nmp_cols:
@@ -539,6 +566,11 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
             height=480,
         )
         st.plotly_chart(fig_nmp, use_container_width=True, config={"scrollZoom": False})
+        st.dataframe(
+            build_zone_data_table(mean_row, [("NMP浓度", "NMP浓度{side}{z}", "#e377c2")], max_zones=8, side_labels=("A侧", "B侧")),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     other_cols = [
         c for c in numeric_cols
@@ -618,9 +650,9 @@ with st.sidebar:
     st.divider()
     st.markdown("### 🔤 计划号编码规则")
     st.caption("第 1 位：正/负极 ｜ 第 2~3 位：产品型号（如 `HE`）")
-    strip_leading = st.checkbox("自动忽略开头的 `+`、`-`、`#` 等符号", value=True)
-    pos_text = st.text_input("正极首字符集合（逗号分隔）", value="P, C, 正")
-    neg_text = st.text_input("负极首字符集合（逗号分隔）", value="N, A, 负")
+    strip_leading = st.checkbox("自动忽略开头的 `'`、`\"`、`*`、`#` 等无意义符号（保留 `+`、`-`）", value=True)
+    pos_text = st.text_input("正极首字符集合（逗号分隔）", value="+")
+    neg_text = st.text_input("负极首字符集合（逗号分隔）", value="-")
     pos_chars = {x.strip().upper() for x in pos_text.split(",") if x.strip()}
     neg_chars = {x.strip().upper() for x in neg_text.split(",") if x.strip()}
 
