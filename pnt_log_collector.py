@@ -535,124 +535,175 @@ def to_excel_bytes(std_df: pd.DataFrame, steady_df: pd.DataFrame, sum_df: pd.Dat
     return buf.getvalue()
 
 
-def _fallback_minimal_pdf(header_line: str, sub_line: str, param_lines: list[str]) -> bytes:
-    def esc_pdf(s: str) -> str:
-        s_ascii = str(s).encode("ascii", "replace").decode("ascii")
-        return s_ascii.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-
-    # A4 横向 (842 x 595 pt)，使用相对 Td 移动光标，支持多列排列
-    ops = [
-        "BT",
-        "/F1 13 Tf",
-        "32 562 Td",
-        f"({esc_pdf(header_line)}) Tj",
-        "/F1 8.5 Tf",
-        "0 -15 Td",
-        f"({esc_pdf(sub_line)}) Tj",
-    ]
-    cur_x, cur_y = 32.0, 547.0
-    col_starts = [32.0, 305.0, 578.0]
-    row_step = 13.0
-    max_rows_per_col = 38
-
-    for idx_p, p_line in enumerate(param_lines[: max_rows_per_col * len(col_starts)]):
-        col_i = idx_p // max_rows_per_col
-        row_i = idx_p % max_rows_per_col
-        if row_i == 0:
-            target_x = col_starts[col_i]
-            target_y = 524.0
-        else:
-            target_x = col_starts[col_i]
-            target_y = 524.0 - row_i * row_step
-
-        dx = target_x - cur_x
-        dy = target_y - cur_y
-        ops.append(f"{dx:.1f} {dy:.1f} Td")
-        ops.append(f"({esc_pdf(p_line)}) Tj")
-        cur_x, cur_y = target_x, target_y
-
-    ops.append("ET")
-    stream_data = ("\n".join(ops)).encode("latin-1", "replace")
-
-    objects = [
-        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-        (
-            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] "
-            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n"
-        ),
-        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
-        (
-            f"5 0 obj\n<< /Length {len(stream_data)} >>\nstream\n".encode("ascii")
-            + stream_data
-            + b"\nendstream\nendobj\n"
-        ),
-    ]
-
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = [0]
-    for obj in objects:
-        offsets.append(len(out))
-        out.extend(obj)
-
-    xref_pos = len(out)
-    out.extend(f"xref\n0 {len(offsets)}\n".encode("ascii"))
-    out.extend(b"0000000000 65535 f \n")
-    for off in offsets[1:]:
-        out.extend(f"{off:010d} 00000 n \n".encode("ascii"))
-
-    out.extend(
-        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode("ascii")
-    )
-    return bytes(out)
+def _df_to_html_table(df: pd.DataFrame) -> str:
+    if df is None or df.empty:
+        return "<p class='muted'>暂无数据</p>"
+    return df.to_html(index=False, border=0, classes="rep-table", na_rep="-")
 
 
-def build_single_page_pdf(
+def build_visual_html_report(
     model_label: str,
     sub_steady: pd.DataFrame,
     sub_all: pd.DataFrame,
     numeric_cols: list[str],
+    temp_selected: list[str],
+    temp_secondary: list[str],
+    fan_selected: list[str],
+    fan_secondary: list[str],
 ) -> bytes:
+    """生成与筛选后可视化页面一致的中文 HTML 报告（支持浏览器直接打开或打印存为 PDF，无乱码）"""
     mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
     std_row = sub_steady[numeric_cols].std(numeric_only=True)
-    header_line = f"Steady Process Report - Model {model_label}"
-    sub_line = (
-        f"Steady: {len(sub_steady)}/{len(sub_all)} | "
-        f"Plans: {sub_steady['标准_计划号'].nunique()} | "
-        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    gen_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    plans_cnt = int(sub_steady["标准_计划号"].nunique()) if "标准_计划号" in sub_steady.columns else 0
+
+    chart_blocks = []
+
+    # 1. 张力可视化
+    tension_cols = [c for c in numeric_cols if any(k in str(c) for k in ["张力", "tension", "Tension"])]
+    if tension_cols:
+        fig_t = build_tension_chart(mean_row, tension_cols, f"{model_label} 各工位稳态张力均值", height=340)
+        t_rows = [
+            {
+                "张力参数": c,
+                "均值": round(float(mean_row[c]), 3) if pd.notna(mean_row[c]) else np.nan,
+                "标准差": round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
+                "最小值": round(float(sub_steady[c].min()), 3) if sub_steady[c].notna().any() else np.nan,
+                "最大值": round(float(sub_steady[c].max()), 3) if sub_steady[c].notna().any() else np.nan,
+            }
+            for c in tension_cols
+        ]
+        chart_html = fig_t.to_html(full_html=False, include_plotlyjs="cdn") if fig_t else ""
+        chart_blocks.append(
+            f"<section class='card'><h3>张力参数可视化（稳态均值与波动）</h3>{chart_html}{_df_to_html_table(pd.DataFrame(t_rows))}</section>"
+        )
+
+    # 2. 烘箱温度 1~8 节
+    if temp_selected:
+        fig_temp = build_dual_axis_stacked_chart(
+            row_series=mean_row,
+            title_top=f"{model_label} A侧 温度 1~8 节",
+            title_bot=f"{model_label} B侧 温度 1~8 节",
+            selected_items=temp_selected,
+            secondary_items=temp_secondary,
+            y1_label="温度 (℃)",
+            y2_label="次坐标 (℃ / 其他)",
+            max_zones=8,
+            height=520,
+        )
+        t_tbl = build_selected_zone_table(mean_row, temp_selected, temp_secondary, max_zones=8)
+        chart_blocks.append(
+            f"<section class='card'><h3>烘箱温度 1~8 节（A侧 / B侧 · 主次坐标）</h3>"
+            f"{fig_temp.to_html(full_html=False, include_plotlyjs='cdn')}{_df_to_html_table(t_tbl)}</section>"
+        )
+
+    # 3. 鼓风机 1~8 节
+    if fan_selected:
+        fig_fan = build_dual_axis_stacked_chart(
+            row_series=mean_row,
+            title_top=f"{model_label} A侧 鼓风机 1~8 节",
+            title_bot=f"{model_label} B侧 鼓风机 1~8 节",
+            selected_items=fan_selected,
+            secondary_items=fan_secondary,
+            y1_label="转速 / 频率",
+            y2_label="次坐标 (转速 / 频率)",
+            max_zones=8,
+            height=540,
+        )
+        f_tbl = build_selected_zone_table(mean_row, fan_selected, fan_secondary, max_zones=8)
+        chart_blocks.append(
+            f"<section class='card'><h3>鼓风机 1~8 节（A侧 / B侧 · 主次坐标）</h3>"
+            f"{fig_fan.to_html(full_html=False, include_plotlyjs='cdn')}{_df_to_html_table(f_tbl)}</section>"
+        )
+
+    # 4. 关键稳态参数统计表
+    stat_rows = [
+        {
+            "参数": c,
+            "均值": round(float(mean_row[c]), 3) if pd.notna(mean_row[c]) else np.nan,
+            "标准差": round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
+            "最小值": round(float(sub_steady[c].min()), 3) if sub_steady[c].notna().any() else np.nan,
+            "最大值": round(float(sub_steady[c].max()), 3) if sub_steady[c].notna().any() else np.nan,
+        }
+        for c in numeric_cols
+    ]
+    chart_blocks.append(
+        f"<section class='card'><h3>稳态工艺参数统计汇总</h3>{_df_to_html_table(pd.DataFrame(stat_rows))}</section>"
     )
-    param_lines = []
-    for col in numeric_cols[:114]:
-        m_v = f"{float(mean_row[col]):.2f}" if pd.notna(mean_row[col]) else "-"
-        s_v = f"{float(std_row[col]):.3f}" if pd.notna(std_row[col]) else "-"
-        param_lines.append(f"{col}: Mean={m_v}, SD={s_v}")
 
-    try:
-        from reportlab.pdfgen import canvas as rl_canvas
-        from reportlab.lib.pagesizes import A4, landscape
-
-        buf = io.BytesIO()
-        w, h = landscape(A4)
-        c = rl_canvas.Canvas(buf, pagesize=(w, h))
-        c.setFont("Helvetica-Bold", 13)
-        c.drawString(32, h - 34, header_line)
-        c.setFont("Helvetica", 8.5)
-        c.drawString(32, h - 50, sub_line)
-
-        col_x = [32, 305, 578]
-        row_h = 12.5
-        max_rows = 38
-        for idx_p, p_line in enumerate(param_lines[: max_rows * len(col_x)]):
-            ci = idx_p // max_rows
-            ri = idx_p % max_rows
-            y = h - 72 - ri * row_h
-            c.drawString(col_x[ci], y, str(p_line).encode("ascii", "replace").decode("ascii"))
-        c.showPage()
-        c.save()
-        buf.seek(0)
-        return buf.getvalue()
-    except Exception:
-        return _fallback_minimal_pdf(header_line, sub_line, param_lines)
+    html_doc = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>稳态工艺可视化报表 - {model_label}</title>
+<style>
+  body {{
+    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+    margin: 24px;
+    background: #f5f7fa;
+    color: #1f2937;
+  }}
+  .top-bar {{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #ffffff;
+    padding: 18px 24px;
+    border-radius: 10px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    margin-bottom: 18px;
+  }}
+  .top-bar h1 {{ margin: 0 0 6px 0; font-size: 22px; }}
+  .meta {{ color: #4b5563; font-size: 13px; }}
+  .print-btn {{
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    padding: 9px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }}
+  .card {{
+    background: #ffffff;
+    padding: 18px 22px;
+    border-radius: 10px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    margin-bottom: 18px;
+    overflow-x: auto;
+  }}
+  .card h3 {{ margin: 0 0 12px 0; font-size: 16px; border-left: 4px solid #2563eb; padding-left: 10px; }}
+  .rep-table {{
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 12.5px;
+  }}
+  .rep-table th, .rep-table td {{
+    border: 1px solid #e5e7eb;
+    padding: 6px 10px;
+    text-align: left;
+  }}
+  .rep-table th {{ background: #f3f4f6; font-weight: 600; }}
+  @media print {{
+    .print-btn {{ display: none; }}
+    body {{ background: #fff; margin: 10px; }}
+    .card, .top-bar {{ box-shadow: none; }}
+  }}
+</style>
+</head>
+<body>
+  <div class="top-bar">
+    <div>
+      <h1>稳态工艺可视化报表 · 型号 {model_label}</h1>
+      <div class="meta">稳态样本：{len(sub_steady)} / 全量：{len(sub_all)} ｜ 计划号数：{plans_cnt} ｜ 生成时间：{gen_time}</div>
+    </div>
+    <button class="print-btn" onclick="window.print()">打印 / 另存为 PDF</button>
+  </div>
+  {"".join(chart_blocks)}
+</body>
+</html>"""
+    return html_doc.encode("utf-8")
 
 
 def render_model_report_page(
@@ -693,16 +744,26 @@ def render_model_report_page(
     else:
         st.info(f"稳态样本 {len(sub_steady)} / 全量 {len(sub_all)}，计划号 {sub_steady['标准_计划号'].nunique()} 个")
 
-    pdf_key = f"pdf_bytes_{model_label}"
-    if st.button(f"生成 {model_label} 单页 PDF", key=f"gen_pdf_{model_label}"):
-        st.session_state[pdf_key] = build_single_page_pdf(model_label, sub_steady, sub_all, numeric_cols)
-    if pdf_key in st.session_state:
+    # 可视化 HTML 报表（中文无乱码，支持浏览器打印/存为 PDF）
+    html_key = f"vis_html_bytes_{model_label}"
+    if st.button(f"生成 {model_label} 可视化报表", key=f"gen_vis_{model_label}"):
+        st.session_state[html_key] = build_visual_html_report(
+            model_label=model_label,
+            sub_steady=sub_steady,
+            sub_all=sub_all,
+            numeric_cols=numeric_cols,
+            temp_selected=temp_selected,
+            temp_secondary=temp_secondary,
+            fan_selected=fan_selected,
+            fan_secondary=fan_secondary,
+        )
+    if html_key in st.session_state:
         st.download_button(
-            label=f"下载 {model_label} 稳态报表（单页 PDF）",
-            data=st.session_state[pdf_key],
-            file_name=f"稳态工艺报表_{model_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-            mime="application/pdf",
-            key=f"dl_pdf_{model_label}",
+            label=f"下载 {model_label} 可视化报表（.html，可打印存为 PDF）",
+            data=st.session_state[html_key],
+            file_name=f"稳态工艺可视化报表_{model_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+            mime="text/html",
+            key=f"dl_vis_{model_label}",
         )
 
     fixed_cols = [
