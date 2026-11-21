@@ -329,7 +329,7 @@ def build_dual_axis_stacked_chart(
     y1_label: str,
     y2_label: str,
     max_zones: int = 8,
-    height: int = 560,
+    height: int = 540,
 ):
     palette_primary = ["#d62728", "#2ca02c", "#9467bd", "#1f77b4", "#ff7f0e", "#8c564b"]
     palette_secondary = ["#008080", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f", "#aec7e8"]
@@ -443,7 +443,6 @@ def build_group_bar_chart(row_series: pd.Series, cols: list[str], title: str, y_
 
 
 def build_tension_chart(row_series: pd.Series, tension_cols: list[str], title: str, height: int = 360):
-    """绘制各工位稳态张力对比图"""
     valid_cols = [c for c in tension_cols if c in row_series.index and pd.notna(row_series[c])]
     if not valid_cols:
         return None
@@ -666,14 +665,18 @@ def render_model_report_page(
     else:
         st.info(f"稳态样本 {len(sub_steady)} / 全量 {len(sub_all)}，计划号 {sub_steady['标准_计划号'].nunique()} 个")
 
-    pdf_bytes = build_single_page_pdf(model_label, sub_steady, sub_all, numeric_cols)
-    st.download_button(
-        label=f"导出 {model_label} 稳态报表（单页 PDF）",
-        data=pdf_bytes,
-        file_name=f"稳态工艺报表_{model_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-        mime="application/pdf",
-        key=f"pdf_dl_{model_label}",
-    )
+    # 按需生成单页 PDF，避免每次筛选都生成所有型号的 PDF 字节流
+    pdf_key = f"pdf_bytes_{model_label}"
+    if st.button(f"生成 {model_label} 单页 PDF", key=f"gen_pdf_{model_label}"):
+        st.session_state[pdf_key] = build_single_page_pdf(model_label, sub_steady, sub_all, numeric_cols)
+    if pdf_key in st.session_state:
+        st.download_button(
+            label=f"下载 {model_label} 稳态报表（单页 PDF）",
+            data=st.session_state[pdf_key],
+            file_name=f"稳态工艺报表_{model_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+            mime="application/pdf",
+            key=f"dl_pdf_{model_label}",
+        )
 
     fixed_cols = [
         c for c in numeric_cols
@@ -703,7 +706,6 @@ def render_model_report_page(
             })
         st.dataframe(pd.DataFrame(fixed_rows), use_container_width=True, hide_index=True)
 
-    # 张力可视化
     tension_cols = [c for c in numeric_cols if any(k in str(c) for k in ["张力", "tension", "Tension"])]
     if tension_cols:
         st.markdown("#### 张力参数可视化（稳态均值与波动）")
@@ -721,7 +723,6 @@ def render_model_report_page(
             })
         st.dataframe(pd.DataFrame(t_rows), use_container_width=True, hide_index=True)
 
-    # 1. 温度折线图（主/次坐标）
     st.markdown("#### 烘箱温度 1~8 节（A侧 / B侧 · 主次坐标）")
     if temp_selected:
         fig_temp = build_dual_axis_stacked_chart(
@@ -733,7 +734,7 @@ def render_model_report_page(
             y1_label="温度 (℃)",
             y2_label="次坐标 (℃ / 其他)",
             max_zones=8,
-            height=560,
+            height=540,
         )
         st.plotly_chart(fig_temp, use_container_width=True, config={"scrollZoom": False})
         st.dataframe(
@@ -744,7 +745,6 @@ def render_model_report_page(
     else:
         st.info("当前未选择任何温度曲线。")
 
-    # 2. 鼓风机折线图（主/次坐标）
     st.markdown("#### 鼓风机 1~8 节（A侧 / B侧 · 主次坐标）")
     if fan_selected:
         fig_fan = build_dual_axis_stacked_chart(
@@ -756,7 +756,7 @@ def render_model_report_page(
             y1_label="转速 / 频率",
             y2_label="次坐标 (转速 / 频率)",
             max_zones=8,
-            height=580,
+            height=560,
         )
         st.plotly_chart(fig_fan, use_container_width=True, config={"scrollZoom": False})
         st.dataframe(
@@ -779,7 +779,7 @@ def render_model_report_page(
             y1_label="NMP 浓度",
             y2_label="次坐标",
             max_zones=8,
-            height=500,
+            height=480,
         )
         st.plotly_chart(fig_nmp, use_container_width=True, config={"scrollZoom": False})
         st.dataframe(
@@ -977,61 +977,44 @@ if st.session_state.get("last_chart_avail_sig") != avail_sig:
 
 applied_cfg = st.session_state.applied_chart_cfg
 
+# 使用 st.form 隔离选择过程，选择多条曲线/坐标时不会触发实时重算与重绘
 with st.expander("温度及鼓风机折线图选择与主次坐标配置", expanded=True):
-    c_t1, c_t2 = st.columns(2)
-    with c_t1:
-        st.markdown("**温度折线图（复选参数 + 次坐标设置）**")
-        draft_temp_sel = st.multiselect(
-            "选择要绘制的温度曲线",
-            options=temp_avail_items,
-            default=[x for x in applied_cfg["temp_selected"] if x in temp_avail_items],
-            key="draft_temp_sel",
-        )
-        draft_temp_sec = st.multiselect(
-            "设为次坐标（右轴 y2）的温度曲线（其余默认主坐标 y1）",
-            options=draft_temp_sel,
-            default=[x for x in applied_cfg["temp_secondary"] if x in draft_temp_sel],
-            key="draft_temp_sec",
-        )
-    with c_t2:
-        st.markdown("**鼓风机折线图（复选参数 + 次坐标设置）**")
-        draft_fan_sel = st.multiselect(
-            "选择要绘制的鼓风机曲线",
-            options=fan_avail_items,
-            default=[x for x in applied_cfg["fan_selected"] if x in fan_avail_items],
-            key="draft_fan_sel",
-        )
-        draft_fan_sec = st.multiselect(
-            "设为次坐标（右轴 y2）的鼓风机曲线（其余默认主坐标 y1）",
-            options=draft_fan_sel,
-            default=[x for x in applied_cfg["fan_secondary"] if x in draft_fan_sel],
-            key="draft_fan_sec",
-        )
+    with st.form("chart_axis_form"):
+        c_t1, c_t2 = st.columns(2)
+        with c_t1:
+            st.markdown("**温度折线图（复选参数 + 次坐标设置）**")
+            form_temp_sel = st.multiselect(
+                "选择要绘制的温度曲线",
+                options=temp_avail_items,
+                default=[x for x in applied_cfg["temp_selected"] if x in temp_avail_items],
+            )
+            form_temp_sec = st.multiselect(
+                "设为次坐标（右轴 y2）的温度曲线（其余默认主坐标 y1）",
+                options=temp_avail_items,
+                default=[x for x in applied_cfg["temp_secondary"] if x in temp_avail_items],
+            )
+        with c_t2:
+            st.markdown("**鼓风机折线图（复选参数 + 次坐标设置）**")
+            form_fan_sel = st.multiselect(
+                "选择要绘制的鼓风机曲线",
+                options=fan_avail_items,
+                default=[x for x in applied_cfg["fan_selected"] if x in fan_avail_items],
+            )
+            form_fan_sec = st.multiselect(
+                "设为次坐标（右轴 y2）的鼓风机曲线（其余默认主坐标 y1）",
+                options=fan_avail_items,
+                default=[x for x in applied_cfg["fan_secondary"] if x in fan_avail_items],
+            )
 
-    has_pending = (
-        draft_temp_sel != applied_cfg["temp_selected"]
-        or draft_temp_sec != applied_cfg["temp_secondary"]
-        or draft_fan_sel != applied_cfg["fan_selected"]
-        or draft_fan_sec != applied_cfg["fan_secondary"]
-    )
-
-    b_col1, b_col2 = st.columns([1, 4])
-    with b_col1:
-        confirm_draw = st.button("确认并绘制图表", type="primary", use_container_width=True)
-    with b_col2:
-        if has_pending:
-            st.warning("已修改选项，点击左侧“确认并绘制图表”后生效。")
-        else:
-            st.caption("当前图表与所选参数及主/次坐标配置一致。")
-
-    if confirm_draw:
-        st.session_state.applied_chart_cfg = {
-            "temp_selected": list(draft_temp_sel),
-            "temp_secondary": list(draft_temp_sec),
-            "fan_selected": list(draft_fan_sel),
-            "fan_secondary": list(draft_fan_sec),
-        }
-        applied_cfg = st.session_state.applied_chart_cfg
+        submitted = st.form_submit_button("确认并绘制图表", type="primary")
+        if submitted:
+            st.session_state.applied_chart_cfg = {
+                "temp_selected": [x for x in form_temp_sel if x in temp_avail_items],
+                "temp_secondary": [x for x in form_temp_sec if x in form_temp_sel],
+                "fan_selected": [x for x in form_fan_sel if x in fan_avail_items],
+                "fan_secondary": [x for x in form_fan_sec if x in form_fan_sel],
+            }
+            applied_cfg = st.session_state.applied_chart_cfg
 
 mask_view = (
     checked_df["来源文件"].isin(sel_file)
@@ -1041,44 +1024,60 @@ mask_view = (
 )
 view_all = checked_df[mask_view].copy()
 view_steady = view_all[view_all["是否稳态"]].copy()
-view_summary = build_summary_table(
-    view_steady,
-    tuple(numeric_cols),
-    split_by_file=split_by_file,
-    group_by_plan=group_by_plan,
+
+# 渲染模式：单型号聚焦渲染（默认仅渲染当前选中型号，减少多型号同时绘图的卡顿）或全部型号标签页
+render_mode = st.radio(
+    "型号报表渲染方式（筛选多型号时建议“单型号聚焦”，响应更快）",
+    ["单型号聚焦渲染", "全部型号同时渲染"],
+    horizontal=True,
 )
 
-model_tabs_labels = [f"型号：{m}" for m in sel_mod] if sel_mod else ["型号报表"]
-top_tabs = st.tabs(
-    model_tabs_labels
-    + [
-        "汇总表",
-        "过滤记录",
-        "明细与导出",
-    ]
-)
+top_tabs = st.tabs(["型号报表", "汇总表", "过滤记录", "明细与导出"])
 
-if sel_mod:
-    for idx, m_code in enumerate(sel_mod):
-        with top_tabs[idx]:
-            st.subheader(f"型号 {m_code}")
-            m_steady = view_steady[view_steady["产品型号"] == m_code].copy()
-            m_all = view_all[view_all["产品型号"] == m_code].copy()
-            render_model_report_page(
-                m_steady,
-                m_all,
-                numeric_cols,
-                model_label=m_code,
-                temp_selected=applied_cfg["temp_selected"],
-                temp_secondary=applied_cfg["temp_secondary"],
-                fan_selected=applied_cfg["fan_selected"],
-                fan_secondary=applied_cfg["fan_secondary"],
-            )
+with top_tabs[0]:
+    if not sel_mod:
+        st.info("请先在上方“筛选产品型号”中选择至少一个型号。")
+    elif render_mode == "单型号聚焦渲染":
+        active_model = st.selectbox("选择要查看的产品型号", sel_mod, key="active_model_focus")
+        st.subheader(f"型号 {active_model}")
+        m_steady = view_steady[view_steady["产品型号"] == active_model].copy()
+        m_all = view_all[view_all["产品型号"] == active_model].copy()
+        render_model_report_page(
+            m_steady,
+            m_all,
+            numeric_cols,
+            model_label=active_model,
+            temp_selected=applied_cfg["temp_selected"],
+            temp_secondary=applied_cfg["temp_secondary"],
+            fan_selected=applied_cfg["fan_selected"],
+            fan_secondary=applied_cfg["fan_secondary"],
+        )
+    else:
+        sub_m_tabs = st.tabs([f"型号：{m}" for m in sel_mod])
+        for idx, m_code in enumerate(sel_mod):
+            with sub_m_tabs[idx]:
+                st.subheader(f"型号 {m_code}")
+                m_steady = view_steady[view_steady["产品型号"] == m_code].copy()
+                m_all = view_all[view_all["产品型号"] == m_code].copy()
+                render_model_report_page(
+                    m_steady,
+                    m_all,
+                    numeric_cols,
+                    model_label=m_code,
+                    temp_selected=applied_cfg["temp_selected"],
+                    temp_secondary=applied_cfg["temp_secondary"],
+                    fan_selected=applied_cfg["fan_selected"],
+                    fan_secondary=applied_cfg["fan_secondary"],
+                )
 
-base_idx = len(model_tabs_labels)
-
-with top_tabs[base_idx]:
+with top_tabs[1]:
     st.subheader("稳态参数汇总")
+    view_summary = build_summary_table(
+        view_steady,
+        tuple(numeric_cols),
+        split_by_file=split_by_file,
+        group_by_plan=group_by_plan,
+    )
     if view_summary.empty:
         st.warning("当前筛选条件下暂无稳态数据。")
     else:
@@ -1089,7 +1088,7 @@ with top_tabs[base_idx]:
         else:
             st.dataframe(view_summary, use_container_width=True, hide_index=True)
 
-with top_tabs[base_idx + 1]:
+with top_tabs[2]:
     st.subheader("已过滤记录")
     removed_df = view_all[~view_all["是否稳态"]].copy()
     if removed_df.empty:
@@ -1100,25 +1099,35 @@ with top_tabs[base_idx + 1]:
         st.dataframe(reason_stats, use_container_width=True, hide_index=True)
         st.dataframe(removed_df, use_container_width=True, hide_index=True)
 
-with top_tabs[base_idx + 2]:
+with top_tabs[3]:
     st.subheader("明细与导出")
-    excel_bytes = to_excel_bytes(view_all, view_steady, view_summary)
-    d1, d2 = st.columns(2)
-    with d1:
-        st.download_button(
-            label="导出完整结果 (.xlsx)",
-            data=excel_bytes,
-            file_name=f"机台Log稳态报表_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+    if st.button("准备导出文件（.xlsx / .csv）", type="primary"):
+        sum_for_export = build_summary_table(
+            view_steady,
+            tuple(numeric_cols),
+            split_by_file=split_by_file,
+            group_by_plan=group_by_plan,
         )
-    with d2:
-        st.download_button(
-            label="导出汇总表 (.csv)",
-            data=view_summary.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"稳态工艺汇总_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+        st.session_state["export_xlsx_bytes"] = to_excel_bytes(view_all, view_steady, sum_for_export)
+        st.session_state["export_csv_bytes"] = sum_for_export.to_csv(index=False).encode("utf-8-sig")
+
+    if "export_xlsx_bytes" in st.session_state and "export_csv_bytes" in st.session_state:
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button(
+                label="下载完整结果 (.xlsx)",
+                data=st.session_state["export_xlsx_bytes"],
+                file_name=f"机台Log稳态报表_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with d2:
+            st.download_button(
+                label="下载汇总表 (.csv)",
+                data=st.session_state["export_csv_bytes"],
+                file_name=f"稳态工艺汇总_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
     show_only_steady = st.checkbox("仅显示稳态运行行", value=False)
     st.dataframe(view_steady if show_only_steady else view_all, use_container_width=True, hide_index=True)
