@@ -19,19 +19,12 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 12px; flex-wrap: wrap; }
     .stTabs [data-baseweb="tab"] { height: 42px; font-weight: 600; font-size: 14px; }
     [data-testid="stMetricValue"] { font-size: 1.4rem !important; }
-    .report-card {
-        border: 1px solid #e5e7eb;
-        border-radius: 10px;
-        padding: 14px 16px;
-        margin-bottom: 14px;
-        background-color: #ffffff;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 
 def generate_demo_log_df() -> pd.DataFrame:
-    """生成长表结构示例机台 Log（含计划号、机台名称、工艺参数名称、工艺参数值、采集日期、采集时间）"""
+    """生成长表结构示例机台 Log"""
     rng = np.random.default_rng(42)
     configs = [
         ("+HE5QL06100-1-110603", "正极涂布(PNT)4#", "2026-11-08 08:00:00", 24, 35.0, 46.2, 102.0, False),
@@ -76,9 +69,13 @@ def generate_demo_log_df() -> pd.DataFrame:
                     (f"B{z}烘箱温度PV", low_pv),
                     (f"B{z}烘箱温度SV", low_pv + 1.0),
                     (f"A{z}供应鼓风机", int(1550 + z * 40 + rng.normal(0, 5))),
+                    (f"A{z}供应鼓风机RPMSV", int(1560 + z * 40)),
                     (f"B{z}供应鼓风机", int(1450 + z * 35 + rng.normal(0, 5))),
+                    (f"B{z}供应鼓风机RPMSV", int(1455 + z * 35)),
                     (f"A{z}排气鼓风机", int(1850 + z * 50 + rng.normal(0, 6))),
+                    (f"A{z}排气鼓风机RPMSV", int(1860 + z * 50)),
                     (f"B{z}排气鼓风机", int(1750 + z * 45 + rng.normal(0, 6))),
+                    (f"B{z}排气鼓风机RPMSV", int(1755 + z * 45)),
                     (f"NMP浓度A{z}", round(120 + z * 15 + rng.normal(0, 2), 1)),
                     (f"NMP浓度B{z}", round(110 + z * 14 + rng.normal(0, 2), 1)),
                 ])
@@ -218,7 +215,6 @@ def filter_unstable_segments(
     rolling_win: int,
     max_std_ratio: float,
 ) -> pd.DataFrame:
-    """屏蔽机台停机、启停过渡、大跨度调速及参数剧烈波动时段"""
     out = df.copy()
     n = len(out)
     if n == 0:
@@ -283,80 +279,155 @@ def filter_unstable_segments(
     return out
 
 
-def extract_zone_series(row_series: pd.Series, side_prefix: str, pattern_tmpl_list: list[str], max_zones: int = 8):
-    x_labels = [f"{i}节" for i in range(1, max_zones + 1)]
-    y_vals = []
+def discover_zone_item_types(numeric_cols: list[str], kind: str, max_zones: int = 8) -> list[str]:
+    """
+    自动识别某类 1~8 节参数的具体子项名称（去除分区号与 A/B 前后缀）：
+    - kind == 'temp': 如 '烘箱温度PV', '烘箱温度SV'
+    - kind == 'fan':  如 '供应鼓风机', '供应鼓风机RPMSV', '排气鼓风机', '排气鼓风机RPMSV'
+    """
+    found = []
+    zone_pat = "|".join(str(z) for z in range(1, max_zones + 1))
+    for col in numeric_cols:
+        c = str(col).strip()
+        if kind == "temp":
+            if "烘箱温度" in c or "温度PV" in c or "温度SV" in c:
+                norm = re.sub(rf"^[AB]?({zone_pat})", "", c).strip()
+                if norm and norm not in found:
+                    found.append(norm)
+        elif kind == "fan":
+            if any(k in c for k in ["供应鼓风机", "排气鼓风机", "鼓风机"]):
+                norm = re.sub(rf"^[AB]?({zone_pat})", "", c).strip()
+                if norm and norm not in found:
+                    found.append(norm)
+    return found
+
+
+def extract_item_zone_values(row_series: pd.Series, side_prefix: str, item_name: str, max_zones: int = 8) -> list[float]:
+    """提取指定侧（A/B）和指定参数子项（如 烘箱温度PV / 供应鼓风机）在 1~8 节的值"""
+    vals = []
     for z in range(1, max_zones + 1):
-        val = np.nan
-        for tmpl in pattern_tmpl_list:
-            cand = tmpl.format(side=side_prefix, z=z)
+        candidates = [
+            f"{side_prefix}{z}{item_name}",
+            f"{z}{item_name}_{side_prefix}",
+            f"{item_name}_{side_prefix}{z}",
+            f"{item_name}{side_prefix}{z}",
+        ]
+        v_out = np.nan
+        for cand in candidates:
             if cand in row_series.index and pd.notna(row_series[cand]):
-                val = float(row_series[cand])
+                v_out = float(row_series[cand])
                 break
-        y_vals.append(val)
-    return x_labels, y_vals
+        vals.append(v_out)
+    return vals
 
 
-def build_stacked_up_down_chart(
+def build_dual_axis_stacked_chart(
     row_series: pd.Series,
     title_top: str,
     title_bot: str,
-    top_specs: list[tuple[str, str, str]],
-    bot_specs: list[tuple[str, str, str]],
-    y_label_top: str,
-    y_label_bot: str,
+    selected_items: list[str],
+    secondary_items: list[str],
+    y1_label: str,
+    y2_label: str,
     max_zones: int = 8,
-    height: int = 540,
+    height: int = 560,
 ):
+    """
+    绘制上下双子图折线图（上=A侧，下=B侧），支持按曲线指定主坐标（y1）或次坐标（y2）。
+    """
+    palette_primary = ["#d62728", "#2ca02c", "#9467bd", "#1f77b4", "#ff7f0e", "#8c564b"]
+    palette_secondary = ["#008080", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f", "#aec7e8"]
+
     fig = make_subplots(
         rows=2,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.12,
+        vertical_spacing=0.13,
         subplot_titles=(title_top, title_bot),
+        specs=[[{"secondary_y": True}], [{"secondary_y": True}]],
     )
     x_labels = [f"第{i}节" for i in range(1, max_zones + 1)]
+    sec_set = set(secondary_items)
 
-    for label, tmpl, color in top_specs:
-        _, y_v = extract_zone_series(row_series, "A", [tmpl], max_zones=max_zones)
+    p_idx = 0
+    s_idx = 0
+    for item in selected_items:
+        is_sec = item in sec_set
+        color = palette_secondary[s_idx % len(palette_secondary)] if is_sec else palette_primary[p_idx % len(palette_primary)]
+        if is_sec:
+            s_idx += 1
+        else:
+            p_idx += 1
+
+        # 上半图：A 侧
+        y_a = extract_item_zone_values(row_series, "A", item, max_zones=max_zones)
         fig.add_trace(
             go.Scatter(
                 x=x_labels,
-                y=y_v,
-                name=f"上/A-{label}",
+                y=y_a,
+                name=f"A-{item}" + (" [次轴]" if is_sec else " [主轴]"),
                 mode="lines+markers",
-                line=dict(color=color, width=2.5),
-                marker=dict(size=7),
+                line=dict(color=color, width=2.4, dash="dash" if is_sec else "solid"),
+                marker=dict(size=7, symbol="diamond" if is_sec else "circle"),
             ),
             row=1,
             col=1,
+            secondary_y=is_sec,
         )
 
-    for label, tmpl, color in bot_specs:
-        _, y_v = extract_zone_series(row_series, "B", [tmpl], max_zones=max_zones)
+        # 下半图：B 侧
+        y_b = extract_item_zone_values(row_series, "B", item, max_zones=max_zones)
         fig.add_trace(
             go.Scatter(
                 x=x_labels,
-                y=y_v,
-                name=f"下/B-{label}",
+                y=y_b,
+                name=f"B-{item}" + (" [次轴]" if is_sec else " [主轴]"),
                 mode="lines+markers",
-                line=dict(color=color, width=2.5, dash="dash"),
-                marker=dict(size=7, symbol="diamond"),
+                line=dict(color=color, width=2.4, dash="dot" if is_sec else "dash"),
+                marker=dict(size=7, symbol="square" if is_sec else "diamond"),
             ),
             row=2,
             col=1,
+            secondary_y=is_sec,
         )
 
-    fig.update_yaxes(title_text=y_label_top, row=1, col=1)
-    fig.update_yaxes(title_text=y_label_bot, row=2, col=1)
+    fig.update_yaxes(title_text=f"主坐标: {y1_label}", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text=f"次坐标: {y2_label}", row=1, col=1, secondary_y=True)
+    fig.update_yaxes(title_text=f"主坐标: {y1_label}", row=2, col=1, secondary_y=False)
+    fig.update_yaxes(title_text=f"次坐标: {y2_label}", row=2, col=1, secondary_y=True)
     fig.update_xaxes(title_text="烘箱 / 干燥分区节数", row=2, col=1)
+
     fig.update_layout(
         height=height,
         dragmode="pan",
         hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="left", x=0.0),
     )
     return fig
+
+
+def build_selected_zone_table(
+    row_series: pd.Series,
+    selected_items: list[str],
+    secondary_items: list[str],
+    max_zones: int = 8,
+) -> pd.DataFrame:
+    cols = [f"第{z}节" for z in range(1, max_zones + 1)]
+    sec_set = set(secondary_items)
+    rows = []
+    for side_prefix, side_label in [("A", "A侧"), ("B", "B侧")]:
+        for item in selected_items:
+            y_vals = extract_item_zone_values(row_series, side_prefix, item, max_zones=max_zones)
+            rec = {
+                "侧别": side_label,
+                "参数": item,
+                "坐标轴": "次坐标(右)" if item in sec_set else "主坐标(左)",
+            }
+            for idx_z, c_lbl in enumerate(cols):
+                val = y_vals[idx_z]
+                rec[c_lbl] = round(float(val), 2) if pd.notna(val) else np.nan
+            rows.append(rec)
+    return pd.DataFrame(rows)
 
 
 def build_group_bar_chart(row_series: pd.Series, cols: list[str], title: str, y_title: str, height: int = 340):
@@ -373,12 +444,7 @@ def build_group_bar_chart(row_series: pd.Series, cols: list[str], title: str, y_
             marker_color="#1f77b4",
         )
     )
-    fig.update_layout(
-        title=title,
-        yaxis_title=y_title,
-        height=height,
-        dragmode="pan",
-    )
+    fig.update_layout(title=title, yaxis_title=y_title, height=height, dragmode="pan")
     return fig
 
 
@@ -448,27 +514,7 @@ def to_excel_bytes(std_df: pd.DataFrame, steady_df: pd.DataFrame, sum_df: pd.Dat
     return buf.getvalue()
 
 
-def build_zone_data_table(
-    row_series: pd.Series,
-    specs: list[tuple[str, str, str]],
-    max_zones: int = 8,
-    side_labels: tuple[str, str] = ("上/A", "下/B"),
-) -> pd.DataFrame:
-    cols = [f"第{z}节" for z in range(1, max_zones + 1)]
-    table_rows = []
-    for side_prefix, side_tag in [("A", side_labels[0]), ("B", side_labels[1])]:
-        for label, tmpl, _ in specs:
-            _, y_vals = extract_zone_series(row_series, side_prefix, [tmpl], max_zones=max_zones)
-            r_dict = {"侧别/参数": f"{side_tag}-{label}"}
-            for z_idx, c_name in enumerate(cols):
-                v = y_vals[z_idx]
-                r_dict[c_name] = round(float(v), 2) if pd.notna(v) else np.nan
-            table_rows.append(r_dict)
-    return pd.DataFrame(table_rows)
-
-
 def _fallback_minimal_pdf(lines: list[str]) -> bytes:
-    """无第三方库时的纯 Python 单页 A4 横向 PDF 生成器"""
     def esc_pdf(s: str) -> str:
         s_ascii = str(s).encode("ascii", "replace").decode("ascii")
         return s_ascii.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
@@ -525,180 +571,51 @@ def build_single_page_pdf(
     sub_all: pd.DataFrame,
     numeric_cols: list[str],
 ) -> bytes:
-    """将单个型号的稳态工艺可视化报表渲染为一页横向 A4 PDF（无 matplotlib 依赖）"""
     mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
     std_row = sub_steady[numeric_cols].std(numeric_only=True)
-
-    spd_candidates = [c for c in numeric_cols if any(k in c for k in ["线速度", "线速", "车速", "速度"]) and "阀" not in c and "泵" not in c]
-    if not spd_candidates:
-        spd_candidates = [c for c in numeric_cols if any(k in c for k in ["线速度", "线速", "车速"])]
-
-    if spd_candidates:
-        scol = spd_candidates[0]
-        s_mean = float(mean_row[scol]) if pd.notna(mean_row[scol]) else np.nan
-        s_std = float(std_row[scol]) if pd.notna(std_row[scol]) else np.nan
-        s_min = float(sub_steady[scol].min()) if sub_steady[scol].notna().any() else np.nan
-        s_max = float(sub_steady[scol].max()) if sub_steady[scol].notna().any() else np.nan
-        summary_line = (
-            f"Model: {model_label} | {scol} Mean: {s_mean:.2f} (SD {s_std:.2f}, Range {s_min:.2f}~{s_max:.2f}) | "
-            f"Steady: {len(sub_steady)}/{len(sub_all)} | Plans: {sub_steady['标准_计划号'].nunique()} | "
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        )
-    else:
-        summary_line = (
-            f"Model: {model_label} | Steady: {len(sub_steady)}/{len(sub_all)} | "
-            f"Plans: {sub_steady['标准_计划号'].nunique()} | "
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        )
+    lines = [
+        f"Steady Process Report - Model {model_label}",
+        f"Steady: {len(sub_steady)}/{len(sub_all)} | Plans: {sub_steady['标准_计划号'].nunique()} | Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+    ]
+    for col in numeric_cols[:35]:
+        m_v = f"{float(mean_row[col]):.2f}" if pd.notna(mean_row[col]) else "-"
+        s_v = f"{float(std_row[col]):.3f}" if pd.notna(std_row[col]) else "-"
+        lines.append(f"{col}: Mean={m_v}, SD={s_v}")
 
     try:
         from reportlab.pdfgen import canvas as rl_canvas
         from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.lib import colors
 
         buf = io.BytesIO()
         w, h = landscape(A4)
         c = rl_canvas.Canvas(buf, pagesize=(w, h))
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(28, h - 34, f"Steady Process Report - Model {model_label}")
+        c.setFont("Helvetica-Bold", 13)
+        c.drawString(30, h - 36, f"Steady Process Report - Model {model_label}")
         c.setFont("Helvetica", 8.5)
-        c.setFillColor(colors.HexColor("#374151"))
-        c.drawString(28, h - 50, summary_line.encode("ascii", "replace").decode("ascii"))
-        c.setFillColor(colors.black)
-
-        def _draw_mini_line_plot(x0, y0, pw, ph, series_list, title_txt):
-            c.setStrokeColor(colors.HexColor("#d1d5db"))
-            c.setLineWidth(0.8)
-            c.rect(x0, y0, pw, ph, stroke=1, fill=0)
-            c.setFont("Helvetica-Bold", 8.5)
-            c.drawString(x0 + 6, y0 + ph - 12, title_txt.encode("ascii", "replace").decode("ascii"))
-
-            all_v = [v for _, yv, _, _ in series_list for v in yv if pd.notna(v)]
-            if not all_v:
-                c.setFont("Helvetica", 8)
-                c.drawString(x0 + 12, y0 + ph * 0.5, "No data in steady samples")
-                return
-            vmin, vmax = min(all_v), max(all_v)
-            if abs(vmax - vmin) < 1e-9:
-                vmax = vmin + 1.0
-                vmin = vmin - 1.0
-
-            plot_l = x0 + 36
-            plot_r = x0 + pw - 12
-            plot_b = y0 + 22
-            plot_t = y0 + ph - 20
-            c.setStrokeColor(colors.HexColor("#9ca3af"))
-            c.line(plot_l, plot_b, plot_r, plot_b)
-            c.line(plot_l, plot_b, plot_l, plot_t)
-
-            c.setFont("Helvetica", 6.5)
-            c.drawString(x0 + 4, plot_t - 4, f"{vmax:.1f}")
-            c.drawString(x0 + 4, plot_b, f"{vmin:.1f}")
-            for i in range(8):
-                xi = plot_l + (plot_r - plot_l) * i / 7.0
-                c.drawString(xi - 5, y0 + 8, f"Z{i+1}")
-
-            for lbl, yv, hex_col, is_dash in series_list:
-                c.setStrokeColor(colors.HexColor(hex_col))
-                c.setLineWidth(1.5)
-                if is_dash:
-                    c.setDash(4, 2)
-                else:
-                    c.setDash()
-                pts = []
-                for i, v in enumerate(yv):
-                    if pd.notna(v):
-                        xi = plot_l + (plot_r - plot_l) * i / 7.0
-                        yi = plot_b + (plot_t - plot_b) * (float(v) - vmin) / (vmax - vmin)
-                        pts.append((xi, yi))
-                for k in range(len(pts) - 1):
-                    c.line(pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1])
-                for px, py in pts:
-                    c.circle(px, py, 2.2, stroke=1, fill=1)
-            c.setDash()
-
-        _, t_a = extract_zone_series(mean_row, "A", ["{side}{z}烘箱温度PV"], 8)
-        _, t_b = extract_zone_series(mean_row, "B", ["{side}{z}烘箱温度PV"], 8)
-        _draw_mini_line_plot(
-            28, 305, 390, 225,
-            [("A PV", t_a, "#d62728", False), ("B PV", t_b, "#1f77b4", True)],
-            "Oven Temp PV Zone 1-8 (A / B)",
-        )
-
-        _, f_a_sup = extract_zone_series(mean_row, "A", ["{side}{z}供应鼓风机"], 8)
-        _, f_b_sup = extract_zone_series(mean_row, "B", ["{side}{z}供应鼓风机"], 8)
-        _, f_a_exh = extract_zone_series(mean_row, "A", ["{side}{z}排气鼓风机"], 8)
-        _, f_b_exh = extract_zone_series(mean_row, "B", ["{side}{z}排气鼓风机"], 8)
-        _draw_mini_line_plot(
-            430, 305, 384, 225,
-            [
-                ("A Sup", f_a_sup, "#2ca02c", False),
-                ("B Sup", f_b_sup, "#008080", True),
-                ("A Exh", f_a_exh, "#9467bd", False),
-                ("B Exh", f_b_exh, "#8c564b", True),
-            ],
-            "Blower Supply / Exhaust Zone 1-8",
-        )
-
-        _, n_a = extract_zone_series(mean_row, "A", ["NMP浓度{side}{z}"], 8)
-        _, n_b = extract_zone_series(mean_row, "B", ["NMP浓度{side}{z}"], 8)
-        _draw_mini_line_plot(
-            28, 35, 390, 250,
-            [("A NMP", n_a, "#e377c2", False), ("B NMP", n_b, "#7f7f7f", True)],
-            "NMP Concentration Zone 1-8 (A / B)",
-        )
-
-        # 右下：稳态参数统计摘要
-        rx0, ry0, rw, rh = 430, 35, 384, 250
-        c.setStrokeColor(colors.HexColor("#d1d5db"))
-        c.rect(rx0, ry0, rw, rh, stroke=1, fill=0)
-        c.setFont("Helvetica-Bold", 8.5)
-        c.drawString(rx0 + 6, ry0 + rh - 14, "Steady Parameter Summary")
-
-        key_cols = [
-            col for col in numeric_cols
-            if any(k in col for k in ["线速度", "线速", "车速", "泵速度", "刀距", "涂布头现位置", "放卷张力", "出料张力"])
-        ][:10]
-        if not key_cols:
-            key_cols = numeric_cols[:10]
-
-        y_cur = ry0 + rh - 30
-        c.setFont("Helvetica-Bold", 7.5)
-        c.drawString(rx0 + 8, y_cur, "Parameter")
-        c.drawString(rx0 + 185, y_cur, "Mean")
-        c.drawString(rx0 + 235, y_cur, "SD")
-        c.drawString(rx0 + 280, y_cur, "Range")
-        y_cur -= 14
-        c.setFont("Helvetica", 7.5)
-        for col in key_cols:
-            c_mean = f"{float(mean_row[col]):.2f}" if pd.notna(mean_row[col]) else "-"
-            c_std = f"{float(std_row[col]):.3f}" if pd.notna(std_row[col]) else "-"
-            c_rng = (
-                f"{float(sub_steady[col].min()):.2f}~{float(sub_steady[col].max()):.2f}"
-                if sub_steady[col].notna().any()
-                else "-"
-            )
-            p_lbl = str(col).encode("ascii", "replace").decode("ascii")[:28]
-            c.drawString(rx0 + 8, y_cur, p_lbl)
-            c.drawString(rx0 + 185, y_cur, c_mean)
-            c.drawString(rx0 + 235, y_cur, c_std)
-            c.drawString(rx0 + 280, y_cur, c_rng)
-            y_cur -= 18
-
+        y = h - 56
+        for ln in lines[1:]:
+            c.drawString(30, y, str(ln).encode("ascii", "replace").decode("ascii"))
+            y -= 13
+            if y < 30:
+                break
         c.showPage()
         c.save()
         buf.seek(0)
         return buf.getvalue()
     except Exception:
-        lines = [f"Steady Process Report - Model {model_label}", summary_line]
-        for col in numeric_cols[:25]:
-            m_v = f"{float(mean_row[col]):.2f}" if pd.notna(mean_row[col]) else "-"
-            s_v = f"{float(std_row[col]):.3f}" if pd.notna(std_row[col]) else "-"
-            lines.append(f"{col}: Mean={m_v}, SD={s_v}")
         return _fallback_minimal_pdf(lines)
 
 
-def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, numeric_cols: list[str], model_label: str):
+def render_model_report_page(
+    sub_steady: pd.DataFrame,
+    sub_all: pd.DataFrame,
+    numeric_cols: list[str],
+    model_label: str,
+    temp_selected: list[str],
+    temp_secondary: list[str],
+    fan_selected: list[str],
+    fan_secondary: list[str],
+):
     """渲染单个产品型号的稳态工艺报表（严格基于稳态数据）"""
     if "是否稳态" in sub_steady.columns:
         sub_steady = sub_steady[sub_steady["是否稳态"]].copy()
@@ -733,6 +650,7 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
         data=pdf_bytes,
         file_name=f"稳态工艺报表_{model_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
         mime="application/pdf",
+        key=f"pdf_dl_{model_label}",
     )
 
     fixed_cols = [
@@ -763,80 +681,76 @@ def render_model_report_page(sub_steady: pd.DataFrame, sub_all: pd.DataFrame, nu
             })
         st.dataframe(pd.DataFrame(fixed_rows), use_container_width=True, hide_index=True)
 
-    st.markdown("#### 烘箱温度 1~8 节（上/A 与 下/B）")
-    temp_specs = [("温度PV", "{side}{z}烘箱温度PV", "#d62728"), ("温度SV", "{side}{z}烘箱温度SV", "#ff7f0e")]
-    fig_temp = build_stacked_up_down_chart(
-        row_series=mean_row,
-        title_top=f"{model_label} 上/A 烘箱温度 1~8 节",
-        title_bot=f"{model_label} 下/B 烘箱温度 1~8 节",
-        top_specs=temp_specs,
-        bot_specs=[("温度PV", "{side}{z}烘箱温度PV", "#1f77b4"), ("温度SV", "{side}{z}烘箱温度SV", "#17becf")],
-        y_label_top="温度 (℃)",
-        y_label_bot="温度 (℃)",
-        max_zones=8,
-        height=540,
-    )
-    st.plotly_chart(fig_temp, use_container_width=True, config={"scrollZoom": False})
-    st.dataframe(build_zone_data_table(mean_row, temp_specs, max_zones=8), use_container_width=True, hide_index=True)
+    # 1. 温度折线图（主/次坐标）
+    st.markdown("#### 烘箱温度 1~8 节（A侧 / B侧 · 主次坐标）")
+    if temp_selected:
+        fig_temp = build_dual_axis_stacked_chart(
+            row_series=mean_row,
+            title_top=f"{model_label} A侧 温度 1~8 节",
+            title_bot=f"{model_label} B侧 温度 1~8 节",
+            selected_items=temp_selected,
+            secondary_items=temp_secondary,
+            y1_label="温度 (℃)",
+            y2_label="次坐标 (℃ / 其他)",
+            max_zones=8,
+            height=560,
+        )
+        st.plotly_chart(fig_temp, use_container_width=True, config={"scrollZoom": False})
+        st.dataframe(
+            build_selected_zone_table(mean_row, temp_selected, temp_secondary, max_zones=8),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("未选择任何温度曲线，请在上方“图表曲线与主次坐标菜单”中勾选。")
 
-    st.markdown("#### 鼓风机 1~8 节（供应与排气、上/下）")
-    fan_top_specs = [
-        ("供应鼓风机", "{side}{z}供应鼓风机", "#2ca02c"),
-        ("供应RPMSV", "{side}{z}供应鼓风机RPMSV", "#98df8a"),
-        ("排气鼓风机", "{side}{z}排气鼓风机", "#9467bd"),
-        ("排气RPMSV", "{side}{z}排气鼓风机RPMSV", "#c5b0d5"),
-    ]
-    fan_bot_specs = [
-        ("供应鼓风机", "{side}{z}供应鼓风机", "#008080"),
-        ("供应RPMSV", "{side}{z}供应鼓风机RPMSV", "#66c2a5"),
-        ("排气鼓风机", "{side}{z}排气鼓风机", "#8c564b"),
-        ("排气RPMSV", "{side}{z}排气鼓风机RPMSV", "#c49c94"),
-    ]
-    fig_fan = build_stacked_up_down_chart(
-        row_series=mean_row,
-        title_top=f"{model_label} 上/A 鼓风机 1~8 节",
-        title_bot=f"{model_label} 下/B 鼓风机 1~8 节",
-        top_specs=fan_top_specs,
-        bot_specs=fan_bot_specs,
-        y_label_top="转速 / 频率",
-        y_label_bot="转速 / 频率",
-        max_zones=8,
-        height=560,
-    )
-    st.plotly_chart(fig_fan, use_container_width=True, config={"scrollZoom": False})
-    fan_rows_df = pd.concat(
-        [
-            build_zone_data_table(mean_row, fan_top_specs, max_zones=8, side_labels=("上/A", "上/B")),
-            build_zone_data_table(mean_row, fan_bot_specs, max_zones=8, side_labels=("下/A", "下/B")),
-        ],
-        ignore_index=True,
-    )
-    st.dataframe(fan_rows_df, use_container_width=True, hide_index=True)
+    # 2. 鼓风机折线图（主/次坐标）
+    st.markdown("#### 鼓风机 1~8 节（A侧 / B侧 · 主次坐标）")
+    if fan_selected:
+        fig_fan = build_dual_axis_stacked_chart(
+            row_series=mean_row,
+            title_top=f"{model_label} A侧 鼓风机 1~8 节",
+            title_bot=f"{model_label} B侧 鼓风机 1~8 节",
+            selected_items=fan_selected,
+            secondary_items=fan_secondary,
+            y1_label="转速 / 频率",
+            y2_label="次坐标 (转速 / 频率)",
+            max_zones=8,
+            height=580,
+        )
+        st.plotly_chart(fig_fan, use_container_width=True, config={"scrollZoom": False})
+        st.dataframe(
+            build_selected_zone_table(mean_row, fan_selected, fan_secondary, max_zones=8),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("未选择任何鼓风机曲线，请在上方“图表曲线与主次坐标菜单”中勾选。")
 
     nmp_cols = [c for c in numeric_cols if "NMP浓度" in c]
     if nmp_cols:
         st.markdown("#### NMP 浓度 1~8 节（A/B 侧）")
-        fig_nmp = build_stacked_up_down_chart(
+        fig_nmp = build_dual_axis_stacked_chart(
             row_series=mean_row,
             title_top=f"{model_label} A侧 NMP 浓度 1~8 节",
             title_bot=f"{model_label} B侧 NMP 浓度 1~8 节",
-            top_specs=[("NMP浓度", "NMP浓度{side}{z}", "#e377c2")],
-            bot_specs=[("NMP浓度", "NMP浓度{side}{z}", "#7f7f7f")],
-            y_label_top="NMP 浓度",
-            y_label_bot="NMP 浓度",
+            selected_items=["NMP浓度"],
+            secondary_items=[],
+            y1_label="NMP 浓度",
+            y2_label="次坐标",
             max_zones=8,
-            height=480,
+            height=500,
         )
         st.plotly_chart(fig_nmp, use_container_width=True, config={"scrollZoom": False})
         st.dataframe(
-            build_zone_data_table(mean_row, [("NMP浓度", "NMP浓度{side}{z}", "#e377c2")], max_zones=8, side_labels=("A侧", "B侧")),
+            build_selected_zone_table(mean_row, ["NMP浓度"], [], max_zones=8),
             use_container_width=True,
             hide_index=True,
         )
 
     other_cols = [
         c for c in numeric_cols
-        if not any(k in c for k in ["烘箱温度", "供应鼓风机", "排气鼓风机", "NMP浓度"])
+        if not any(k in c for k in ["烘箱温度", "温度PV", "温度SV", "供应鼓风机", "排气鼓风机", "鼓风机", "NMP浓度"])
     ]
     if other_cols:
         st.markdown("#### 其他工艺参数")
@@ -999,6 +913,42 @@ with f4:
     plan_opts = sorted(checked_df["标准_计划号"].dropna().unique())
     sel_plan = st.multiselect("筛选计划号", plan_opts, default=plan_opts)
 
+# 温度及鼓风机折线图：复选菜单 + 主次坐标选择菜单
+temp_avail_items = discover_zone_item_types(numeric_cols, kind="temp", max_zones=8)
+fan_avail_items = discover_zone_item_types(numeric_cols, kind="fan", max_zones=8)
+
+with st.expander("温度及鼓风机折线图选择与主次坐标配置", expanded=True):
+    c_t1, c_t2 = st.columns(2)
+    with c_t1:
+        st.markdown("**温度折线图（复选参数 + 次坐标设置）**")
+        temp_selected = st.multiselect(
+            "选择要绘制的温度曲线",
+            options=temp_avail_items,
+            default=temp_avail_items,
+            key="temp_curve_select",
+        )
+        temp_secondary = st.multiselect(
+            "设为次坐标（右轴 y2）的温度曲线（其余默认主坐标 y1）",
+            options=temp_selected,
+            default=[],
+            key="temp_sec_axis_select",
+        )
+    with c_t2:
+        st.markdown("**鼓风机折线图（复选参数 + 次坐标设置）**")
+        fan_selected = st.multiselect(
+            "选择要绘制的鼓风机曲线",
+            options=fan_avail_items,
+            default=fan_avail_items,
+            key="fan_curve_select",
+        )
+        default_fan_sec = [x for x in fan_selected if "RPMSV" in x or "SV" in x]
+        fan_secondary = st.multiselect(
+            "设为次坐标（右轴 y2）的鼓风机曲线（其余默认主坐标 y1）",
+            options=fan_selected,
+            default=default_fan_sec,
+            key="fan_sec_axis_select",
+        )
+
 mask_view = (
     checked_df["来源文件"].isin(sel_file)
     & checked_df["极性"].isin(sel_pol)
@@ -1030,7 +980,16 @@ if sel_mod:
             st.subheader(f"型号 {m_code}")
             m_steady = view_steady[view_steady["产品型号"] == m_code].copy()
             m_all = view_all[view_all["产品型号"] == m_code].copy()
-            render_model_report_page(m_steady, m_all, numeric_cols, model_label=m_code)
+            render_model_report_page(
+                m_steady,
+                m_all,
+                numeric_cols,
+                model_label=m_code,
+                temp_selected=temp_selected,
+                temp_secondary=temp_secondary,
+                fan_selected=fan_selected,
+                fan_secondary=fan_secondary,
+            )
 
 base_idx = len(model_tabs_labels)
 
