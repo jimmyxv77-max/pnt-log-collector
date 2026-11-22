@@ -142,19 +142,44 @@ I18N = {
 }
 
 
-def _pad_axis_range(vals, pad_ratio: float = 0.08, min_span: float = 1.0):
-    """为纵坐标轴增加上下余量，避免柱子/折线紧贴上下边界"""
+def _nice_step(span: float, target_ticks: float = 5.0) -> float:
+    if not np.isfinite(span) or span <= 0:
+        return 1.0
+    raw = span / max(target_ticks, 2.0)
+    mag = 10.0 ** np.floor(np.log10(raw))
+    norm = raw / mag
+    if norm <= 1.0:
+        step = 1.0
+    elif norm <= 2.0:
+        step = 2.0
+    elif norm <= 2.5:
+        step = 2.5
+    elif norm <= 5.0:
+        step = 5.0
+    else:
+        step = 10.0
+    return float(step * mag)
+
+
+def smart_y_axis(vals, pad_ratio: float = 0.12, min_span: float = 2.0):
+    """计算带上下余量且对齐整刻度的纵坐标区间与步长，确保最低点下方有刻度线与留白"""
     arr = np.asarray(vals, dtype=float)
     arr = arr[np.isfinite(arr)]
     if arr.size == 0:
-        return None
+        return None, None
     vmin, vmax = float(arr.min()), float(arr.max())
     if np.isclose(vmin, vmax):
-        half = max(abs(vmin) * pad_ratio, min_span * 0.5)
-        return [vmin - half, vmax + half]
+        dtick = _nice_step(max(abs(vmin) * 0.15, min_span), target_ticks=4.0)
+        low = np.floor((vmin - dtick) / dtick) * dtick
+        high = np.ceil((vmax + dtick) / dtick) * dtick
+        return [float(low), float(high)], float(dtick)
+
     span = vmax - vmin
-    margin = max(span * pad_ratio, min_span * 0.05)
-    return [vmin - margin, vmax + margin]
+    margin = max(span * pad_ratio, min_span * 0.1)
+    dtick = _nice_step(span + 2.0 * margin, target_ticks=5.0)
+    low = np.floor((vmin - max(margin * 0.65, dtick * 0.45)) / dtick) * dtick
+    high = np.ceil((vmax + max(margin * 0.65, dtick * 0.45)) / dtick) * dtick
+    return [float(low), float(high)], float(dtick)
 
 
 def generate_demo_log_df() -> pd.DataFrame:
@@ -475,15 +500,15 @@ def build_dual_axis_stacked_chart(
         rows=2,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.13,
+        vertical_spacing=0.14,
         subplot_titles=(title_top, title_bot),
         specs=[[{"secondary_y": True}], [{"secondary_y": True}]],
     )
     x_labels = [f"Zone {i}" if lang == "en" else f"第{i}节" for i in range(1, max_zones + 1)]
     sec_set = set(secondary_items)
 
-    y1_all_vals = []
-    y2_all_vals = []
+    y1_top_vals, y1_bot_vals = [], []
+    y2_top_vals, y2_bot_vals = [], []
 
     p_idx = 0
     s_idx = 0
@@ -497,10 +522,13 @@ def build_dual_axis_stacked_chart(
 
         y_a = extract_item_zone_values(row_series, "A", item, max_zones=max_zones)
         y_b = extract_item_zone_values(row_series, "B", item, max_zones=max_zones)
+
         if is_sec:
-            y2_all_vals.extend(y_a + y_b)
+            y2_top_vals.extend(y_a)
+            y2_bot_vals.extend(y_b)
         else:
-            y1_all_vals.extend(y_a + y_b)
+            y1_top_vals.extend(y_a)
+            y1_bot_vals.extend(y_b)
 
         fig.add_trace(
             go.Scatter(
@@ -530,24 +558,34 @@ def build_dual_axis_stacked_chart(
             secondary_y=is_sec,
         )
 
-    r_y1 = _pad_axis_range(y1_all_vals, pad_ratio=0.08, min_span=2.0)
-    r_y2 = _pad_axis_range(y2_all_vals, pad_ratio=0.08, min_span=2.0)
+    for r_i, v1, v2 in [
+        (1, y1_top_vals, y2_top_vals),
+        (2, y1_bot_vals, y2_bot_vals),
+    ]:
+        r_y1, dt_y1 = smart_y_axis(v1, pad_ratio=0.14, min_span=2.0)
+        r_y2, dt_y2 = smart_y_axis(v2, pad_ratio=0.14, min_span=2.0)
 
-    for r_i in (1, 2):
-        fig.update_yaxes(
+        y1_cfg = dict(
             title_text=("Primary: " if lang == "en" else "主坐标: ") + y1_label,
-            range=r_y1,
-            row=r_i,
-            col=1,
-            secondary_y=False,
+            showgrid=True,
+            zeroline=False,
         )
-        fig.update_yaxes(
+        if r_y1 is not None:
+            y1_cfg["range"] = r_y1
+            y1_cfg["dtick"] = dt_y1
+
+        y2_cfg = dict(
             title_text=("Secondary: " if lang == "en" else "次坐标: ") + y2_label,
-            range=r_y2,
-            row=r_i,
-            col=1,
-            secondary_y=True,
+            showgrid=False,
+            zeroline=False,
         )
+        if r_y2 is not None:
+            y2_cfg["range"] = r_y2
+            y2_cfg["dtick"] = dt_y2
+
+        fig.update_yaxes(row=r_i, col=1, secondary_y=False, **y1_cfg)
+        fig.update_yaxes(row=r_i, col=1, secondary_y=True, **y2_cfg)
+
     fig.update_xaxes(title_text="Oven / Drying Zone" if lang == "en" else "烘箱 / 干燥分区节数", row=2, col=1)
 
     fig.update_layout(
@@ -593,7 +631,11 @@ def build_group_bar_chart(row_series: pd.Series, cols: list[str], title: str, y_
     if not valid_cols:
         return None
     vals = [float(row_series[c]) for c in valid_cols]
-    y_rng = _pad_axis_range(vals, pad_ratio=0.10, min_span=1.0)
+    y_rng, dt_y = smart_y_axis(vals, pad_ratio=0.14, min_span=1.0)
+    y_axis_cfg = dict(title=y_title, showgrid=True, zeroline=False)
+    if y_rng is not None:
+        y_axis_cfg["range"] = y_rng
+        y_axis_cfg["dtick"] = dt_y
     fig = go.Figure(
         go.Bar(
             x=valid_cols,
@@ -605,7 +647,7 @@ def build_group_bar_chart(row_series: pd.Series, cols: list[str], title: str, y_
     )
     fig.update_layout(
         title=title,
-        yaxis=dict(title=y_title, range=y_rng),
+        yaxis=y_axis_cfg,
         height=height,
         dragmode="pan",
     )
@@ -617,7 +659,15 @@ def build_tension_chart(row_series: pd.Series, tension_cols: list[str], title: s
     if not valid_cols:
         return None
     vals = [float(row_series[c]) for c in valid_cols]
-    y_rng = _pad_axis_range(vals, pad_ratio=0.10, min_span=2.0)
+    y_rng, dt_y = smart_y_axis(vals, pad_ratio=0.14, min_span=2.0)
+    y_axis_cfg = dict(
+        title="Tension" if lang == "en" else "张力值",
+        showgrid=True,
+        zeroline=False,
+    )
+    if y_rng is not None:
+        y_axis_cfg["range"] = y_rng
+        y_axis_cfg["dtick"] = dt_y
     colors = ["#2b6cb0", "#2f855a", "#b7791f", "#6b46c1", "#c53030", "#2c7a7b"]
     fig = go.Figure(
         go.Bar(
@@ -630,7 +680,7 @@ def build_tension_chart(row_series: pd.Series, tension_cols: list[str], title: s
     )
     fig.update_layout(
         title=title,
-        yaxis=dict(title="Tension" if lang == "en" else "张力值", range=y_rng),
+        yaxis=y_axis_cfg,
         xaxis_title="Tension Station / Parameter" if lang == "en" else "张力工位 / 参数",
         height=height,
         dragmode="pan",
@@ -757,7 +807,7 @@ def build_visual_html_report(
     fan_secondary: list[str],
     lang: str = "zh",
 ) -> bytes:
-    """生成与筛选后可视化页面一致的 HTML 报告（含泵速与刀距，带纵坐标余量，支持打印存为 PDF）"""
+    """生成与筛选后可视化页面一致的 HTML 报告（含泵速与刀距，带统一刻度与上下余量，支持打印存为 PDF）"""
     t = I18N[lang]
     mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
     std_row = sub_steady[numeric_cols].std(numeric_only=True)
