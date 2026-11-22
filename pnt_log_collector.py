@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 st.set_page_config(
-    page_title="机台原始 Log 标准化收集与稳态工艺报表系统",
+    page_title="Machine Log Steady Process Report / 机台稳态工艺报表",
     page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded",
@@ -21,6 +21,140 @@ st.markdown("""
     [data-testid="stMetricValue"] { font-size: 1.4rem !important; }
 </style>
 """, unsafe_allow_html=True)
+
+I18N = {
+    "zh": {
+        "lang_label": "界面语言 / Language",
+        "page_title": "机台 Log 稳态工艺报表",
+        "page_caption": "按产品型号分标签展示稳态工艺参数与 1~8 节对照",
+        "sb_import": "机台 Log 导入",
+        "sb_upload": "导入标准化机台 Log (.xlsx / .csv)",
+        "sb_append": "多文件追加合并（关闭则覆盖当前数据）",
+        "sb_reset": "恢复示例机台 Log",
+        "sb_plan_rule": "计划号规则",
+        "sb_plan_hint": "第 1 位：正/负极 ｜ 第 2~3 位：产品型号（如 `HE`）",
+        "sb_strip": "自动忽略开头的 `'`、`\"`、`*`、`#` 等无意义符号（保留 `+`、`-`）",
+        "sb_pos": "正极首字符集合（逗号分隔）",
+        "sb_neg": "负极首字符集合（逗号分隔）",
+        "exp_map": "字段映射",
+        "plan_col": "计划号列",
+        "time_col": "时间分布列",
+        "exp_steady": "稳态过滤规则",
+        "spd_col": "线速度列（判停机/调速）",
+        "none_opt": "无",
+        "min_spd": "稳态最低线速度阈值",
+        "max_span": "最大允许线速度跨度",
+        "max_jump": "最大允许相邻线速度跳变",
+        "buf_rows": "启停/波动前后剔除缓冲时间点",
+        "watch_cols": "波动监控参数列",
+        "roll_win": "滚动窗口大小（时间点）",
+        "max_std": "最大允许相对波动率 (std/mean)",
+        "split_file": "汇总按来源文件拆分",
+        "group_plan": "汇总按计划号拆分",
+        "flt_file": "筛选来源文件",
+        "flt_pol": "筛选极性",
+        "flt_mod": "筛选产品型号",
+        "flt_plan": "筛选计划号",
+        "exp_chart_cfg": "温度及鼓风机折线图选择与主次坐标配置",
+        "temp_cfg_title": "**温度折线图（复选参数 + 次坐标设置）**",
+        "temp_sel": "选择要绘制的温度曲线",
+        "temp_sec": "设为次坐标（右轴 y2）的温度曲线（其余默认主坐标 y1）",
+        "fan_cfg_title": "**鼓风机折线图（复选参数 + 次坐标设置）**",
+        "fan_sel": "选择要绘制的鼓风机曲线",
+        "fan_sec": "设为次坐标（右轴 y2）的鼓风机曲线（其余默认主坐标 y1）",
+        "apply_chart": "确认并绘制图表",
+        "render_mode": "型号报表渲染方式（筛选多型号时建议“单型号聚焦”，响应更快）",
+        "mode_focus": "单型号聚焦渲染",
+        "mode_all": "全部型号同时渲染",
+        "tabs": ["型号报表", "汇总表", "过滤记录", "明细与导出"],
+        "pick_model": "选择要查看的产品型号",
+        "model_prefix": "型号",
+        "pump_gap_title": "泵速度与刀距（涂布头现位置）",
+        "tension_title": "张力参数可视化（稳态均值与波动）",
+        "temp_zone_title": "烘箱温度 1~8 节（A侧 / B侧 · 主次坐标）",
+        "fan_zone_title": "鼓风机 1~8 节（A侧 / B侧 · 主次坐标）",
+        "nmp_zone_title": "NMP 浓度 1~8 节（A/B 侧）",
+        "other_title": "其他工艺参数",
+        "gen_vis": "生成 {m} 可视化报表",
+        "dl_vis": "下载 {m} 可视化报表（.html，可打印存为 PDF）",
+        "print_btn": "打印 / 另存为 PDF",
+        "rep_title": "稳态工艺可视化报表 · 型号 {m}",
+        "stat_sum_title": "稳态工艺参数统计汇总",
+    },
+    "en": {
+        "lang_label": "Interface Language / 界面语言",
+        "page_title": "Machine Log Steady Process Report",
+        "page_caption": "Steady-state process parameters & Zones 1–8 comparison by product model",
+        "sb_import": "Machine Log Import",
+        "sb_upload": "Import Standardized Log (.xlsx / .csv)",
+        "sb_append": "Append multiple files (off = overwrite current data)",
+        "sb_reset": "Restore Demo Log",
+        "sb_plan_rule": "Plan Code Rules",
+        "sb_plan_hint": "Pos 1: Polarity | Pos 2–3: Model code (e.g., `HE`)",
+        "sb_strip": "Strip leading symbols like `'`, `\"`, `*`, `#` (keep `+`, `-`)",
+        "sb_pos": "Cathode leading chars (comma-separated)",
+        "sb_neg": "Anode leading chars (comma-separated)",
+        "exp_map": "Column Mapping",
+        "plan_col": "Plan / Lot Column",
+        "time_col": "Timestamp Column",
+        "exp_steady": "Steady-State Filter Rules",
+        "spd_col": "Line Speed Column (stop/ramp check)",
+        "none_opt": "None",
+        "min_spd": "Min steady line speed",
+        "max_span": "Max allowed line speed span",
+        "max_jump": "Max adjacent line speed jump",
+        "buf_rows": "Buffer rows around unstable points",
+        "watch_cols": "Fluctuation watch columns",
+        "roll_win": "Rolling window size (points)",
+        "max_std": "Max relative fluctuation (std/mean)",
+        "split_file": "Split summary by source file",
+        "group_plan": "Split summary by plan ID",
+        "flt_file": "Filter Source File",
+        "flt_pol": "Filter Polarity",
+        "flt_mod": "Filter Model",
+        "flt_plan": "Filter Plan ID",
+        "exp_chart_cfg": "Temperature & Blower Line Chart Selection & Dual-Axis Setup",
+        "temp_cfg_title": "**Temperature Line Chart (Select Series + Secondary Axis)**",
+        "temp_sel": "Select temperature series to plot",
+        "temp_sec": "Secondary axis (right y2) temperature series (others on left y1)",
+        "fan_cfg_title": "**Blower Line Chart (Select Series + Secondary Axis)**",
+        "fan_sel": "Select blower series to plot",
+        "fan_sec": "Secondary axis (right y2) blower series (others on left y1)",
+        "apply_chart": "Apply & Plot Charts",
+        "render_mode": "Model rendering mode (Single-model focus recommended for multi-model)",
+        "mode_focus": "Single-Model Focus",
+        "mode_all": "Render All Models",
+        "tabs": ["Model Report", "Summary Table", "Filtered Rows", "Details & Export"],
+        "pick_model": "Select product model to view",
+        "model_prefix": "Model",
+        "pump_gap_title": "Pump Speed & Slot Gap (Coating Head Position)",
+        "tension_title": "Web Tension Visualization (Steady Mean & Spread)",
+        "temp_zone_title": "Oven Temperature Zones 1–8 (Side A / Side B · Dual Axis)",
+        "fan_zone_title": "Blower Zones 1–8 (Side A / Side B · Dual Axis)",
+        "nmp_zone_title": "NMP Concentration Zones 1–8 (Side A / Side B)",
+        "other_title": "Other Process Parameters",
+        "gen_vis": "Generate {m} Visual Report",
+        "dl_vis": "Download {m} Visual Report (.html, print to PDF)",
+        "print_btn": "Print / Save as PDF",
+        "rep_title": "Steady Process Visual Report · Model {m}",
+        "stat_sum_title": "Steady Process Parameter Statistics",
+    },
+}
+
+
+def _pad_axis_range(vals, pad_ratio: float = 0.08, min_span: float = 1.0):
+    """为纵坐标轴增加上下余量，避免柱子/折线紧贴上下边界"""
+    arr = np.asarray(vals, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return None
+    vmin, vmax = float(arr.min()), float(arr.max())
+    if np.isclose(vmin, vmax):
+        half = max(abs(vmin) * pad_ratio, min_span * 0.5)
+        return [vmin - half, vmax + half]
+    span = vmax - vmin
+    margin = max(span * pad_ratio, min_span * 0.05)
+    return [vmin - margin, vmax + margin]
 
 
 def generate_demo_log_df() -> pd.DataFrame:
@@ -332,6 +466,7 @@ def build_dual_axis_stacked_chart(
     y2_label: str,
     max_zones: int = 8,
     height: int = 540,
+    lang: str = "zh",
 ):
     palette_primary = ["#d62728", "#2ca02c", "#9467bd", "#1f77b4", "#ff7f0e", "#8c564b"]
     palette_secondary = ["#008080", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f", "#aec7e8"]
@@ -344,8 +479,11 @@ def build_dual_axis_stacked_chart(
         subplot_titles=(title_top, title_bot),
         specs=[[{"secondary_y": True}], [{"secondary_y": True}]],
     )
-    x_labels = [f"第{i}节" for i in range(1, max_zones + 1)]
+    x_labels = [f"Zone {i}" if lang == "en" else f"第{i}节" for i in range(1, max_zones + 1)]
     sec_set = set(secondary_items)
+
+    y1_all_vals = []
+    y2_all_vals = []
 
     p_idx = 0
     s_idx = 0
@@ -358,11 +496,17 @@ def build_dual_axis_stacked_chart(
             p_idx += 1
 
         y_a = extract_item_zone_values(row_series, "A", item, max_zones=max_zones)
+        y_b = extract_item_zone_values(row_series, "B", item, max_zones=max_zones)
+        if is_sec:
+            y2_all_vals.extend(y_a + y_b)
+        else:
+            y1_all_vals.extend(y_a + y_b)
+
         fig.add_trace(
             go.Scatter(
                 x=x_labels,
                 y=y_a,
-                name=f"A-{item}" + (" [次轴]" if is_sec else " [主轴]"),
+                name=f"A-{item}" + (" [Y2]" if is_sec else " [Y1]"),
                 mode="lines+markers",
                 line=dict(color=color, width=2.4, dash="dash" if is_sec else "solid"),
                 marker=dict(size=7, symbol="diamond" if is_sec else "circle"),
@@ -372,12 +516,11 @@ def build_dual_axis_stacked_chart(
             secondary_y=is_sec,
         )
 
-        y_b = extract_item_zone_values(row_series, "B", item, max_zones=max_zones)
         fig.add_trace(
             go.Scatter(
                 x=x_labels,
                 y=y_b,
-                name=f"B-{item}" + (" [次轴]" if is_sec else " [主轴]"),
+                name=f"B-{item}" + (" [Y2]" if is_sec else " [Y1]"),
                 mode="lines+markers",
                 line=dict(color=color, width=2.4, dash="dot" if is_sec else "dash"),
                 marker=dict(size=7, symbol="square" if is_sec else "diamond"),
@@ -387,11 +530,25 @@ def build_dual_axis_stacked_chart(
             secondary_y=is_sec,
         )
 
-    fig.update_yaxes(title_text=f"主坐标: {y1_label}", row=1, col=1, secondary_y=False)
-    fig.update_yaxes(title_text=f"次坐标: {y2_label}", row=1, col=1, secondary_y=True)
-    fig.update_yaxes(title_text=f"主坐标: {y1_label}", row=2, col=1, secondary_y=False)
-    fig.update_yaxes(title_text=f"次坐标: {y2_label}", row=2, col=1, secondary_y=True)
-    fig.update_xaxes(title_text="烘箱 / 干燥分区节数", row=2, col=1)
+    r_y1 = _pad_axis_range(y1_all_vals, pad_ratio=0.08, min_span=2.0)
+    r_y2 = _pad_axis_range(y2_all_vals, pad_ratio=0.08, min_span=2.0)
+
+    for r_i in (1, 2):
+        fig.update_yaxes(
+            title_text=("Primary: " if lang == "en" else "主坐标: ") + y1_label,
+            range=r_y1,
+            row=r_i,
+            col=1,
+            secondary_y=False,
+        )
+        fig.update_yaxes(
+            title_text=("Secondary: " if lang == "en" else "次坐标: ") + y2_label,
+            range=r_y2,
+            row=r_i,
+            col=1,
+            secondary_y=True,
+        )
+    fig.update_xaxes(title_text="Oven / Drying Zone" if lang == "en" else "烘箱 / 干燥分区节数", row=2, col=1)
 
     fig.update_layout(
         height=height,
@@ -407,17 +564,22 @@ def build_selected_zone_table(
     selected_items: list[str],
     secondary_items: list[str],
     max_zones: int = 8,
+    lang: str = "zh",
 ) -> pd.DataFrame:
-    cols = [f"第{z}节" for z in range(1, max_zones + 1)]
+    cols = [f"Zone {z}" if lang == "en" else f"第{z}节" for z in range(1, max_zones + 1)]
     sec_set = set(secondary_items)
     rows = []
-    for side_prefix, side_label in [("A", "A侧"), ("B", "B侧")]:
+    for side_prefix, side_label in [("A", "Side A" if lang == "en" else "A侧"), ("B", "Side B" if lang == "en" else "B侧")]:
         for item in selected_items:
             y_vals = extract_item_zone_values(row_series, side_prefix, item, max_zones=max_zones)
             rec = {
-                "侧别": side_label,
-                "参数": item,
-                "坐标轴": "次坐标(右)" if item in sec_set else "主坐标(左)",
+                "Side" if lang == "en" else "侧别": side_label,
+                "Parameter" if lang == "en" else "参数": item,
+                "Axis" if lang == "en" else "坐标轴": (
+                    ("Secondary (Right)" if item in sec_set else "Primary (Left)")
+                    if lang == "en"
+                    else ("次坐标(右)" if item in sec_set else "主坐标(左)")
+                ),
             }
             for idx_z, c_lbl in enumerate(cols):
                 val = y_vals[idx_z]
@@ -431,6 +593,7 @@ def build_group_bar_chart(row_series: pd.Series, cols: list[str], title: str, y_
     if not valid_cols:
         return None
     vals = [float(row_series[c]) for c in valid_cols]
+    y_rng = _pad_axis_range(vals, pad_ratio=0.10, min_span=1.0)
     fig = go.Figure(
         go.Bar(
             x=valid_cols,
@@ -440,15 +603,21 @@ def build_group_bar_chart(row_series: pd.Series, cols: list[str], title: str, y_
             marker_color="#1f77b4",
         )
     )
-    fig.update_layout(title=title, yaxis_title=y_title, height=height, dragmode="pan")
+    fig.update_layout(
+        title=title,
+        yaxis=dict(title=y_title, range=y_rng),
+        height=height,
+        dragmode="pan",
+    )
     return fig
 
 
-def build_tension_chart(row_series: pd.Series, tension_cols: list[str], title: str, height: int = 360):
+def build_tension_chart(row_series: pd.Series, tension_cols: list[str], title: str, height: int = 360, lang: str = "zh"):
     valid_cols = [c for c in tension_cols if c in row_series.index and pd.notna(row_series[c])]
     if not valid_cols:
         return None
     vals = [float(row_series[c]) for c in valid_cols]
+    y_rng = _pad_axis_range(vals, pad_ratio=0.10, min_span=2.0)
     colors = ["#2b6cb0", "#2f855a", "#b7791f", "#6b46c1", "#c53030", "#2c7a7b"]
     fig = go.Figure(
         go.Bar(
@@ -461,8 +630,8 @@ def build_tension_chart(row_series: pd.Series, tension_cols: list[str], title: s
     )
     fig.update_layout(
         title=title,
-        yaxis_title="张力值",
-        xaxis_title="张力工位 / 参数",
+        yaxis=dict(title="Tension" if lang == "en" else "张力值", range=y_rng),
+        xaxis_title="Tension Station / Parameter" if lang == "en" else "张力工位 / 参数",
         height=height,
         dragmode="pan",
     )
@@ -474,6 +643,7 @@ def build_pump_gap_dataframe(
     numeric_cols: list[str],
     mean_row: pd.Series,
     std_row: pd.Series,
+    lang: str = "zh",
 ) -> pd.DataFrame:
     fixed_cols = [
         c for c in numeric_cols
@@ -486,18 +656,18 @@ def build_pump_gap_dataframe(
         c_min = float(sub_steady[c].min()) if sub_steady[c].notna().any() else np.nan
         c_max = float(sub_steady[c].max()) if sub_steady[c].notna().any() else np.nan
         if "泵速度" in c:
-            param_type = "泵速度"
+            param_type = "Pump Speed" if lang == "en" else "泵速度"
         elif "涂布头现位置" in c or "现位置" in c:
-            param_type = "刀距（涂布头现位置）"
+            param_type = "Gap (Head Pos)" if lang == "en" else "刀距（涂布头现位置）"
         else:
-            param_type = "刀距"
+            param_type = "Slot Gap" if lang == "en" else "刀距"
         fixed_rows.append({
-            "类别": param_type,
-            "参数": c,
-            "均值": round(c_mean, 3) if pd.notna(c_mean) else np.nan,
-            "标准差": round(c_std, 4) if pd.notna(c_std) else np.nan,
-            "最小值": round(c_min, 3) if pd.notna(c_min) else np.nan,
-            "最大值": round(c_max, 3) if pd.notna(c_max) else np.nan,
+            "Category" if lang == "en" else "类别": param_type,
+            "Parameter" if lang == "en" else "参数": c,
+            "Mean" if lang == "en" else "均值": round(c_mean, 3) if pd.notna(c_mean) else np.nan,
+            "Std Dev" if lang == "en" else "标准差": round(c_std, 4) if pd.notna(c_std) else np.nan,
+            "Min" if lang == "en" else "最小值": round(c_min, 3) if pd.notna(c_min) else np.nan,
+            "Max" if lang == "en" else "最大值": round(c_max, 3) if pd.notna(c_max) else np.nan,
         })
     return pd.DataFrame(fixed_rows)
 
@@ -572,7 +742,7 @@ def to_excel_bytes(std_df: pd.DataFrame, steady_df: pd.DataFrame, sum_df: pd.Dat
 
 def _df_to_html_table(df: pd.DataFrame) -> str:
     if df is None or df.empty:
-        return "<p class='muted'>暂无数据</p>"
+        return "<p class='muted'>-</p>"
     return df.to_html(index=False, border=0, classes="rep-table", na_rep="-")
 
 
@@ -585,8 +755,10 @@ def build_visual_html_report(
     temp_secondary: list[str],
     fan_selected: list[str],
     fan_secondary: list[str],
+    lang: str = "zh",
 ) -> bytes:
-    """生成与筛选后可视化页面一致的中文 HTML 报告（必含泵速与刀距信息，支持打印存为 PDF）"""
+    """生成与筛选后可视化页面一致的 HTML 报告（含泵速与刀距，带纵坐标余量，支持打印存为 PDF）"""
+    t = I18N[lang]
     mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
     std_row = sub_steady[numeric_cols].std(numeric_only=True)
     gen_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -594,95 +766,104 @@ def build_visual_html_report(
 
     chart_blocks = []
 
-    # 0. 泵速度与刀距（涂布头现位置）——必含核心版块，放在最前
-    df_pump_gap = build_pump_gap_dataframe(sub_steady, numeric_cols, mean_row, std_row)
+    df_pump_gap = build_pump_gap_dataframe(sub_steady, numeric_cols, mean_row, std_row, lang=lang)
     if not df_pump_gap.empty:
         chart_blocks.append(
-            f"<section class='card'><h3>泵速度与刀距（涂布头现位置）</h3>{_df_to_html_table(df_pump_gap)}</section>"
+            f"<section class='card'><h3>{t['pump_gap_title']}</h3>{_df_to_html_table(df_pump_gap)}</section>"
         )
     else:
+        empty_msg = "No pump speed / gap parameters detected." if lang == "en" else "当前数据未检测到泵速度 / 刀距 / 涂布头现位置参数列。"
         chart_blocks.append(
-            "<section class='card'><h3>泵速度与刀距（涂布头现位置）</h3>"
-            "<p class='muted'>当前数据未检测到泵速度 / 刀距 / 涂布头现位置参数列。</p></section>"
+            f"<section class='card'><h3>{t['pump_gap_title']}</h3><p class='muted'>{empty_msg}</p></section>"
         )
 
-    # 1. 张力可视化
     tension_cols = [c for c in numeric_cols if any(k in str(c) for k in ["张力", "tension", "Tension"])]
     if tension_cols:
-        fig_t = build_tension_chart(mean_row, tension_cols, f"{model_label} 各工位稳态张力均值", height=340)
+        fig_t = build_tension_chart(
+            mean_row,
+            tension_cols,
+            f"{model_label} Steady Tension Mean" if lang == "en" else f"{model_label} 各工位稳态张力均值",
+            height=340,
+            lang=lang,
+        )
         t_rows = [
             {
-                "张力参数": c,
-                "均值": round(float(mean_row[c]), 3) if pd.notna(mean_row[c]) else np.nan,
-                "标准差": round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
-                "最小值": round(float(sub_steady[c].min()), 3) if sub_steady[c].notna().any() else np.nan,
-                "最大值": round(float(sub_steady[c].max()), 3) if sub_steady[c].notna().any() else np.nan,
+                ("Tension Param" if lang == "en" else "张力参数"): c,
+                ("Mean" if lang == "en" else "均值"): round(float(mean_row[c]), 3) if pd.notna(mean_row[c]) else np.nan,
+                ("Std Dev" if lang == "en" else "标准差"): round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
+                ("Min" if lang == "en" else "最小值"): round(float(sub_steady[c].min()), 3) if sub_steady[c].notna().any() else np.nan,
+                ("Max" if lang == "en" else "最大值"): round(float(sub_steady[c].max()), 3) if sub_steady[c].notna().any() else np.nan,
             }
             for c in tension_cols
         ]
         chart_html = fig_t.to_html(full_html=False, include_plotlyjs="cdn") if fig_t else ""
         chart_blocks.append(
-            f"<section class='card'><h3>张力参数可视化（稳态均值与波动）</h3>{chart_html}{_df_to_html_table(pd.DataFrame(t_rows))}</section>"
+            f"<section class='card'><h3>{t['tension_title']}</h3>{chart_html}{_df_to_html_table(pd.DataFrame(t_rows))}</section>"
         )
 
-    # 2. 烘箱温度 1~8 节
     if temp_selected:
         fig_temp = build_dual_axis_stacked_chart(
             row_series=mean_row,
-            title_top=f"{model_label} A侧 温度 1~8 节",
-            title_bot=f"{model_label} B侧 温度 1~8 节",
+            title_top=f"{model_label} Side A Temp Zones 1–8" if lang == "en" else f"{model_label} A侧 温度 1~8 节",
+            title_bot=f"{model_label} Side B Temp Zones 1–8" if lang == "en" else f"{model_label} B侧 温度 1~8 节",
             selected_items=temp_selected,
             secondary_items=temp_secondary,
-            y1_label="温度 (℃)",
-            y2_label="次坐标 (℃ / 其他)",
+            y1_label="Temp (C)" if lang == "en" else "温度 (℃)",
+            y2_label="Secondary" if lang == "en" else "次坐标 (℃ / 其他)",
             max_zones=8,
             height=520,
+            lang=lang,
         )
-        t_tbl = build_selected_zone_table(mean_row, temp_selected, temp_secondary, max_zones=8)
+        t_tbl = build_selected_zone_table(mean_row, temp_selected, temp_secondary, max_zones=8, lang=lang)
         chart_blocks.append(
-            f"<section class='card'><h3>烘箱温度 1~8 节（A侧 / B侧 · 主次坐标）</h3>"
+            f"<section class='card'><h3>{t['temp_zone_title']}</h3>"
             f"{fig_temp.to_html(full_html=False, include_plotlyjs='cdn')}{_df_to_html_table(t_tbl)}</section>"
         )
 
-    # 3. 鼓风机 1~8 节
     if fan_selected:
         fig_fan = build_dual_axis_stacked_chart(
             row_series=mean_row,
-            title_top=f"{model_label} A侧 鼓风机 1~8 节",
-            title_bot=f"{model_label} B侧 鼓风机 1~8 节",
+            title_top=f"{model_label} Side A Blower Zones 1–8" if lang == "en" else f"{model_label} A侧 鼓风机 1~8 节",
+            title_bot=f"{model_label} Side B Blower Zones 1–8" if lang == "en" else f"{model_label} B侧 鼓风机 1~8 节",
             selected_items=fan_selected,
             secondary_items=fan_secondary,
-            y1_label="转速 / 频率",
-            y2_label="次坐标 (转速 / 频率)",
+            y1_label="RPM / Freq" if lang == "en" else "转速 / 频率",
+            y2_label="Secondary" if lang == "en" else "次坐标 (转速 / 频率)",
             max_zones=8,
             height=540,
+            lang=lang,
         )
-        f_tbl = build_selected_zone_table(mean_row, fan_selected, fan_secondary, max_zones=8)
+        f_tbl = build_selected_zone_table(mean_row, fan_selected, fan_secondary, max_zones=8, lang=lang)
         chart_blocks.append(
-            f"<section class='card'><h3>鼓风机 1~8 节（A侧 / B侧 · 主次坐标）</h3>"
+            f"<section class='card'><h3>{t['fan_zone_title']}</h3>"
             f"{fig_fan.to_html(full_html=False, include_plotlyjs='cdn')}{_df_to_html_table(f_tbl)}</section>"
         )
 
-    # 4. 关键稳态参数统计表
     stat_rows = [
         {
-            "参数": c,
-            "均值": round(float(mean_row[c]), 3) if pd.notna(mean_row[c]) else np.nan,
-            "标准差": round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
-            "最小值": round(float(sub_steady[c].min()), 3) if sub_steady[c].notna().any() else np.nan,
-            "最大值": round(float(sub_steady[c].max()), 3) if sub_steady[c].notna().any() else np.nan,
+            ("Parameter" if lang == "en" else "参数"): c,
+            ("Mean" if lang == "en" else "均值"): round(float(mean_row[c]), 3) if pd.notna(mean_row[c]) else np.nan,
+            ("Std Dev" if lang == "en" else "标准差"): round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
+            ("Min" if lang == "en" else "最小值"): round(float(sub_steady[c].min()), 3) if sub_steady[c].notna().any() else np.nan,
+            ("Max" if lang == "en" else "最大值"): round(float(sub_steady[c].max()), 3) if sub_steady[c].notna().any() else np.nan,
         }
         for c in numeric_cols
     ]
     chart_blocks.append(
-        f"<section class='card'><h3>稳态工艺参数统计汇总</h3>{_df_to_html_table(pd.DataFrame(stat_rows))}</section>"
+        f"<section class='card'><h3>{t['stat_sum_title']}</h3>{_df_to_html_table(pd.DataFrame(stat_rows))}</section>"
+    )
+
+    meta_line = (
+        f"Steady: {len(sub_steady)} / {len(sub_all)} | Plans: {plans_cnt} | Generated: {gen_time}"
+        if lang == "en"
+        else f"稳态样本：{len(sub_steady)} / 全量：{len(sub_all)} ｜ 计划号数：{plans_cnt} ｜ 生成时间：{gen_time}"
     )
 
     html_doc = f"""<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="{"en" if lang == "en" else "zh-CN"}">
 <head>
 <meta charset="utf-8" />
-<title>稳态工艺可视化报表 - {model_label}</title>
+<title>{t['rep_title'].format(m=model_label)}</title>
 <style>
   body {{
     font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
@@ -743,10 +924,10 @@ def build_visual_html_report(
 <body>
   <div class="top-bar">
     <div>
-      <h1>稳态工艺可视化报表 · 型号 {model_label}</h1>
-      <div class="meta">稳态样本：{len(sub_steady)} / 全量：{len(sub_all)} ｜ 计划号数：{plans_cnt} ｜ 生成时间：{gen_time}</div>
+      <h1>{t['rep_title'].format(m=model_label)}</h1>
+      <div class="meta">{meta_line}</div>
     </div>
-    <button class="print-btn" onclick="window.print()">打印 / 另存为 PDF</button>
+    <button class="print-btn" onclick="window.print()">{t['print_btn']}</button>
   </div>
   {"".join(chart_blocks)}
 </body>
@@ -763,13 +944,19 @@ def render_model_report_page(
     temp_secondary: list[str],
     fan_selected: list[str],
     fan_secondary: list[str],
+    lang: str = "zh",
 ):
     """渲染单个产品型号的稳态工艺报表（严格基于稳态数据）"""
+    t = I18N[lang]
     if "是否稳态" in sub_steady.columns:
         sub_steady = sub_steady[sub_steady["是否稳态"]].copy()
 
     if sub_steady.empty:
-        st.warning(f"型号 {model_label} 在当前筛选与稳态阈值条件下暂无稳态样本。")
+        st.warning(
+            f"Model {model_label}: no steady samples under current filter/threshold."
+            if lang == "en"
+            else f"型号 {model_label} 在当前筛选与稳态阈值条件下暂无稳态样本。"
+        )
         return
 
     mean_row = sub_steady[numeric_cols].mean(numeric_only=True)
@@ -785,15 +972,25 @@ def render_model_report_page(
         spd_std = float(std_row[scol]) if pd.notna(std_row[scol]) else np.nan
         spd_min = float(sub_steady[scol].min()) if sub_steady[scol].notna().any() else np.nan
         spd_max = float(sub_steady[scol].max()) if sub_steady[scol].notna().any() else np.nan
-        st.info(
-            f"{scol}：稳态均值 {spd_mean:.2f}（标准差 {spd_std:.2f}，区间 {spd_min:.2f} ~ {spd_max:.2f}；"
-            f"稳态样本 {len(sub_steady)} / 全量 {len(sub_all)}，计划号 {sub_steady['标准_计划号'].nunique()} 个）"
-        )
+        if lang == "en":
+            st.info(
+                f"{scol}: Mean {spd_mean:.2f} (SD {spd_std:.2f}, Range {spd_min:.2f} ~ {spd_max:.2f} | "
+                f"Steady {len(sub_steady)}/{len(sub_all)}, Plans {sub_steady['标准_计划号'].nunique()})"
+            )
+        else:
+            st.info(
+                f"{scol}：稳态均值 {spd_mean:.2f}（标准差 {spd_std:.2f}，区间 {spd_min:.2f} ~ {spd_max:.2f}；"
+                f"稳态样本 {len(sub_steady)} / 全量 {len(sub_all)}，计划号 {sub_steady['标准_计划号'].nunique()} 个）"
+            )
     else:
-        st.info(f"稳态样本 {len(sub_steady)} / 全量 {len(sub_all)}，计划号 {sub_steady['标准_计划号'].nunique()} 个")
+        st.info(
+            f"Steady {len(sub_steady)}/{len(sub_all)}, Plans {sub_steady['标准_计划号'].nunique()}"
+            if lang == "en"
+            else f"稳态样本 {len(sub_steady)} / 全量 {len(sub_all)}，计划号 {sub_steady['标准_计划号'].nunique()} 个"
+        )
 
-    html_key = f"vis_html_bytes_{model_label}"
-    if st.button(f"生成 {model_label} 可视化报表", key=f"gen_vis_{model_label}"):
+    html_key = f"vis_html_bytes_{model_label}_{lang}"
+    if st.button(t["gen_vis"].format(m=model_label), key=f"gen_vis_{model_label}_{lang}"):
         st.session_state[html_key] = build_visual_html_report(
             model_label=model_label,
             sub_steady=sub_steady,
@@ -803,99 +1000,108 @@ def render_model_report_page(
             temp_secondary=temp_secondary,
             fan_selected=fan_selected,
             fan_secondary=fan_secondary,
+            lang=lang,
         )
     if html_key in st.session_state:
         st.download_button(
-            label=f"下载 {model_label} 可视化报表（.html，可打印存为 PDF）",
+            label=t["dl_vis"].format(m=model_label),
             data=st.session_state[html_key],
-            file_name=f"稳态工艺可视化报表_{model_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+            file_name=f"稳态工艺可视化报表_{model_label}_{lang}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
             mime="text/html",
-            key=f"dl_vis_{model_label}",
+            key=f"dl_vis_{model_label}_{lang}",
         )
 
-    df_pump_gap = build_pump_gap_dataframe(sub_steady, numeric_cols, mean_row, std_row)
+    df_pump_gap = build_pump_gap_dataframe(sub_steady, numeric_cols, mean_row, std_row, lang=lang)
     if not df_pump_gap.empty:
-        st.markdown("#### 泵速度与刀距（涂布头现位置）")
+        st.markdown(f"#### {t['pump_gap_title']}")
         st.dataframe(df_pump_gap, use_container_width=True, hide_index=True)
 
     tension_cols = [c for c in numeric_cols if any(k in str(c) for k in ["张力", "tension", "Tension"])]
     if tension_cols:
-        st.markdown("#### 张力参数可视化（稳态均值与波动）")
-        fig_tension = build_tension_chart(mean_row, tension_cols, f"{model_label} 各工位稳态张力均值")
+        st.markdown(f"#### {t['tension_title']}")
+        fig_tension = build_tension_chart(
+            mean_row,
+            tension_cols,
+            f"{model_label} Steady Tension Mean" if lang == "en" else f"{model_label} 各工位稳态张力均值",
+            lang=lang,
+        )
         if fig_tension:
             st.plotly_chart(fig_tension, use_container_width=True, config={"scrollZoom": False})
         t_rows = []
         for c in tension_cols:
             t_rows.append({
-                "张力参数": c,
-                "均值": round(float(mean_row[c]), 3) if pd.notna(mean_row[c]) else np.nan,
-                "标准差": round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
-                "最小值": round(float(sub_steady[c].min()), 3) if sub_steady[c].notna().any() else np.nan,
-                "最大值": round(float(sub_steady[c].max()), 3) if sub_steady[c].notna().any() else np.nan,
+                ("Tension Param" if lang == "en" else "张力参数"): c,
+                ("Mean" if lang == "en" else "均值"): round(float(mean_row[c]), 3) if pd.notna(mean_row[c]) else np.nan,
+                ("Std Dev" if lang == "en" else "标准差"): round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
+                ("Min" if lang == "en" else "最小值"): round(float(sub_steady[c].min()), 3) if sub_steady[c].notna().any() else np.nan,
+                ("Max" if lang == "en" else "最大值"): round(float(sub_steady[c].max()), 3) if sub_steady[c].notna().any() else np.nan,
             })
         st.dataframe(pd.DataFrame(t_rows), use_container_width=True, hide_index=True)
 
-    st.markdown("#### 烘箱温度 1~8 节（A侧 / B侧 · 主次坐标）")
+    st.markdown(f"#### {t['temp_zone_title']}")
     if temp_selected:
         fig_temp = build_dual_axis_stacked_chart(
             row_series=mean_row,
-            title_top=f"{model_label} A侧 温度 1~8 节",
-            title_bot=f"{model_label} B侧 温度 1~8 节",
+            title_top=f"{model_label} Side A Temp Zones 1–8" if lang == "en" else f"{model_label} A侧 温度 1~8 节",
+            title_bot=f"{model_label} Side B Temp Zones 1–8" if lang == "en" else f"{model_label} B侧 温度 1~8 节",
             selected_items=temp_selected,
             secondary_items=temp_secondary,
-            y1_label="温度 (℃)",
-            y2_label="次坐标 (℃ / 其他)",
+            y1_label="Temp (C)" if lang == "en" else "温度 (℃)",
+            y2_label="Secondary" if lang == "en" else "次坐标 (℃ / 其他)",
             max_zones=8,
             height=540,
+            lang=lang,
         )
         st.plotly_chart(fig_temp, use_container_width=True, config={"scrollZoom": False})
         st.dataframe(
-            build_selected_zone_table(mean_row, temp_selected, temp_secondary, max_zones=8),
+            build_selected_zone_table(mean_row, temp_selected, temp_secondary, max_zones=8, lang=lang),
             use_container_width=True,
             hide_index=True,
         )
     else:
-        st.info("当前未选择任何温度曲线。")
+        st.info("No temperature series selected." if lang == "en" else "当前未选择任何温度曲线。")
 
-    st.markdown("#### 鼓风机 1~8 节（A侧 / B侧 · 主次坐标）")
+    st.markdown(f"#### {t['fan_zone_title']}")
     if fan_selected:
         fig_fan = build_dual_axis_stacked_chart(
             row_series=mean_row,
-            title_top=f"{model_label} A侧 鼓风机 1~8 节",
-            title_bot=f"{model_label} B侧 鼓风机 1~8 节",
+            title_top=f"{model_label} Side A Blower Zones 1–8" if lang == "en" else f"{model_label} A侧 鼓风机 1~8 节",
+            title_bot=f"{model_label} Side B Blower Zones 1–8" if lang == "en" else f"{model_label} B侧 鼓风机 1~8 节",
             selected_items=fan_selected,
             secondary_items=fan_secondary,
-            y1_label="转速 / 频率",
-            y2_label="次坐标 (转速 / 频率)",
+            y1_label="RPM / Freq" if lang == "en" else "转速 / 频率",
+            y2_label="Secondary" if lang == "en" else "次坐标 (转速 / 频率)",
             max_zones=8,
             height=560,
+            lang=lang,
         )
         st.plotly_chart(fig_fan, use_container_width=True, config={"scrollZoom": False})
         st.dataframe(
-            build_selected_zone_table(mean_row, fan_selected, fan_secondary, max_zones=8),
+            build_selected_zone_table(mean_row, fan_selected, fan_secondary, max_zones=8, lang=lang),
             use_container_width=True,
             hide_index=True,
         )
     else:
-        st.info("当前未选择任何鼓风机曲线。")
+        st.info("No blower series selected." if lang == "en" else "当前未选择任何鼓风机曲线。")
 
     nmp_cols = [c for c in numeric_cols if "NMP浓度" in c]
     if nmp_cols:
-        st.markdown("#### NMP 浓度 1~8 节（A/B 侧）")
+        st.markdown(f"#### {t['nmp_zone_title']}")
         fig_nmp = build_dual_axis_stacked_chart(
             row_series=mean_row,
-            title_top=f"{model_label} A侧 NMP 浓度 1~8 节",
-            title_bot=f"{model_label} B侧 NMP 浓度 1~8 节",
+            title_top=f"{model_label} Side A NMP Zones 1–8" if lang == "en" else f"{model_label} A侧 NMP 浓度 1~8 节",
+            title_bot=f"{model_label} Side B NMP Zones 1–8" if lang == "en" else f"{model_label} B侧 NMP 浓度 1~8 节",
             selected_items=["NMP浓度"],
             secondary_items=[],
-            y1_label="NMP 浓度",
-            y2_label="次坐标",
+            y1_label="NMP Conc." if lang == "en" else "NMP 浓度",
+            y2_label="Secondary" if lang == "en" else "次坐标",
             max_zones=8,
             height=480,
+            lang=lang,
         )
         st.plotly_chart(fig_nmp, use_container_width=True, config={"scrollZoom": False})
         st.dataframe(
-            build_selected_zone_table(mean_row, ["NMP浓度"], [], max_zones=8),
+            build_selected_zone_table(mean_row, ["NMP浓度"], [], max_zones=8, lang=lang),
             use_container_width=True,
             hide_index=True,
         )
@@ -905,30 +1111,40 @@ def render_model_report_page(
         if not any(k in c for k in ["烘箱温度", "温度PV", "温度SV", "供应鼓风机", "排气鼓风机", "鼓风机", "NMP浓度", "张力", "tension", "Tension"])
     ]
     if other_cols:
-        st.markdown("#### 其他工艺参数")
+        st.markdown(f"#### {t['other_title']}")
         col_g1, col_g2 = st.columns(2)
         pump_grp = [c for c in other_cols if any(k in c for k in ["泵", "浆料", "出料", "回收", "间隙阀"])]
         ctrl_grp = [c for c in other_cols if c not in pump_grp]
 
         with col_g1:
             if pump_grp:
-                fig_p = build_group_bar_chart(mean_row, pump_grp[:12], f"{model_label} 供料与阀参数", "参数值")
+                fig_p = build_group_bar_chart(
+                    mean_row,
+                    pump_grp[:12],
+                    f"{model_label} Feed & Valve" if lang == "en" else f"{model_label} 供料与阀参数",
+                    "Value" if lang == "en" else "参数值",
+                )
                 if fig_p:
                     st.plotly_chart(fig_p, use_container_width=True, config={"scrollZoom": False})
         with col_g2:
             if ctrl_grp:
-                fig_c = build_group_bar_chart(mean_row, ctrl_grp[:12], f"{model_label} 速度/尺寸参数", "参数值")
+                fig_c = build_group_bar_chart(
+                    mean_row,
+                    ctrl_grp[:12],
+                    f"{model_label} Speed & Dimension" if lang == "en" else f"{model_label} 速度/尺寸参数",
+                    "Value" if lang == "en" else "参数值",
+                )
                 if fig_c:
                     st.plotly_chart(fig_c, use_container_width=True, config={"scrollZoom": False})
 
         rep_rows = []
         for c in other_cols:
             rep_rows.append({
-                "参数": c,
-                "均值": round(float(mean_row[c]), 4) if pd.notna(mean_row[c]) else np.nan,
-                "标准差": round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
-                "最小值": round(float(sub_steady[c].min()), 4) if sub_steady[c].notna().any() else np.nan,
-                "最大值": round(float(sub_steady[c].max()), 4) if sub_steady[c].notna().any() else np.nan,
+                ("Parameter" if lang == "en" else "参数"): c,
+                ("Mean" if lang == "en" else "均值"): round(float(mean_row[c]), 4) if pd.notna(mean_row[c]) else np.nan,
+                ("Std Dev" if lang == "en" else "标准差"): round(float(std_row[c]), 4) if pd.notna(std_row[c]) else np.nan,
+                ("Min" if lang == "en" else "最小值"): round(float(sub_steady[c].min()), 4) if sub_steady[c].notna().any() else np.nan,
+                ("Max" if lang == "en" else "最大值"): round(float(sub_steady[c].max()), 4) if sub_steady[c].notna().any() else np.nan,
             })
         st.dataframe(pd.DataFrame(rep_rows), use_container_width=True, hide_index=True)
 
@@ -937,13 +1153,22 @@ if "raw_log_df" not in st.session_state:
     st.session_state.raw_log_df = generate_demo_log_df()
 
 with st.sidebar:
-    st.markdown("### 机台 Log 导入")
+    lang_choice = st.radio(
+        "界面语言 / Language",
+        options=["zh", "en"],
+        format_func=lambda x: "简体中文" if x == "zh" else "English",
+        horizontal=True,
+    )
+    t = I18N[lang_choice]
+
+    st.divider()
+    st.markdown(f"### {t['sb_import']}")
     uploaded_files = st.file_uploader(
-        "导入标准化机台 Log (.xlsx / .csv)",
+        t["sb_upload"],
         type=["xlsx", "csv"],
         accept_multiple_files=True,
     )
-    append_mode = st.checkbox("多文件追加合并（关闭则覆盖当前数据）", value=False)
+    append_mode = st.checkbox(t["sb_append"], value=False)
 
     if uploaded_files:
         imported_list = []
@@ -953,7 +1178,7 @@ with st.sidebar:
                 temp_df["来源文件"] = uf.name
                 imported_list.append(temp_df)
             except Exception as e:
-                st.error(f"读取 `{uf.name}` 失败：{e}")
+                st.error(f"{uf.name}: {e}")
 
         if imported_list:
             combined_new = pd.concat(imported_list, ignore_index=True)
@@ -967,30 +1192,30 @@ with st.sidebar:
                     st.session_state.raw_log_df = combined_new
                 st.session_state.has_user_import = True
                 st.session_state.last_batch_sig = batch_sig
-                st.success(f"已导入 {len(imported_list)} 个文件，共 {len(combined_new)} 行原始记录。")
+                st.success(f"{len(imported_list)} files, {len(combined_new)} rows.")
 
-    if st.button("恢复示例机台 Log"):
+    if st.button(t["sb_reset"]):
         st.session_state.raw_log_df = generate_demo_log_df()
         st.session_state.has_user_import = False
         st.session_state.pop("last_batch_sig", None)
         st.rerun()
 
     st.divider()
-    st.markdown("### 计划号规则")
-    st.caption("第 1 位：正/负极 ｜ 第 2~3 位：产品型号（如 `HE`）")
-    strip_leading = st.checkbox("自动忽略开头的 `'`、`\"`、`*`、`#` 等无意义符号（保留 `+`、`-`）", value=True)
-    pos_text = st.text_input("正极首字符集合（逗号分隔）", value="+")
-    neg_text = st.text_input("负极首字符集合（逗号分隔）", value="-")
+    st.markdown(f"### {t['sb_plan_rule']}")
+    st.caption(t["sb_plan_hint"])
+    strip_leading = st.checkbox(t["sb_strip"], value=True)
+    pos_text = st.text_input(t["sb_pos"], value="+")
+    neg_text = st.text_input(t["sb_neg"], value="-")
     pos_chars = tuple(sorted({x.strip().upper() for x in pos_text.split(",") if x.strip()}))
     neg_chars = tuple(sorted({x.strip().upper() for x in neg_text.split(",") if x.strip()}))
 
-st.title("机台 Log 稳态工艺报表")
-st.caption("按产品型号分标签展示稳态工艺参数与 1~8 节对照")
+st.title(t["page_title"])
+st.caption(t["page_caption"])
 
 raw_df = st.session_state.raw_log_df
 all_cols = list(raw_df.columns)
 
-with st.expander("字段映射", expanded=False):
+with st.expander(t["exp_map"], expanded=False):
     c_m1, c_m2 = st.columns(2)
     default_plan_idx = 0
     for i, c in enumerate(all_cols):
@@ -1005,13 +1230,13 @@ with st.expander("字段映射", expanded=False):
             break
 
     with c_m1:
-        plan_col = st.selectbox("计划号列", all_cols, index=default_plan_idx)
+        plan_col = st.selectbox(t["plan_col"], all_cols, index=default_plan_idx)
     with c_m2:
-        time_col = st.selectbox("时间分布列", all_cols, index=default_time_idx)
+        time_col = st.selectbox(t["time_col"], all_cols, index=default_time_idx)
 
 std_df, numeric_cols = standardize_logs(raw_df, plan_col, time_col, strip_leading, pos_chars, neg_chars)
 
-with st.expander("稳态过滤规则", expanded=False):
+with st.expander(t["exp_steady"], expanded=False):
     r1, r2, r3, r4 = st.columns(4)
     default_spd_idx = 0
     for i, c in enumerate(numeric_cols):
@@ -1020,28 +1245,28 @@ with st.expander("稳态过滤规则", expanded=False):
             break
 
     with r1:
-        speed_col = st.selectbox("线速度列（判停机/调速）", ["无"] + numeric_cols, index=default_spd_idx + 1 if numeric_cols else 0)
-        min_speed = st.number_input("稳态最低线速度阈值", min_value=0.0, value=20.0, step=1.0)
-        max_speed_span = st.number_input("最大允许线速度跨度", min_value=0.5, value=5.0, step=0.5)
+        speed_col = st.selectbox(t["spd_col"], [t["none_opt"]] + numeric_cols, index=default_spd_idx + 1 if numeric_cols else 0)
+        min_speed = st.number_input(t["min_spd"], min_value=0.0, value=20.0, step=1.0)
+        max_speed_span = st.number_input(t["max_span"], min_value=0.5, value=5.0, step=0.5)
     with r2:
-        max_speed_jump = st.number_input("最大允许相邻线速度跳变", min_value=0.1, value=3.0, step=0.5)
-        buffer_rows = st.number_input("启停/波动前后剔除缓冲时间点", min_value=0, value=1, step=1)
+        max_speed_jump = st.number_input(t["max_jump"], min_value=0.1, value=3.0, step=0.5)
+        buffer_rows = st.number_input(t["buf_rows"], min_value=0, value=1, step=1)
     with r3:
         default_watch = [c for c in numeric_cols if any(k in c for k in ["线速", "线速度", "泵速度", "温度PV"])][:3]
         watch_cols = st.multiselect(
-            "波动监控参数列",
+            t["watch_cols"],
             numeric_cols,
             default=default_watch if default_watch else numeric_cols[: min(3, len(numeric_cols))],
         )
-        rolling_win = st.number_input("滚动窗口大小（时间点）", min_value=3, value=5, step=1)
+        rolling_win = st.number_input(t["roll_win"], min_value=3, value=5, step=1)
     with r4:
-        max_std_ratio = st.number_input("最大允许相对波动率 (std/mean)", min_value=0.01, value=0.08, step=0.01, format="%.2f")
-        split_by_file = st.checkbox("汇总按来源文件拆分", value=True)
-        group_by_plan = st.checkbox("汇总按计划号拆分", value=True)
+        max_std_ratio = st.number_input(t["max_std"], min_value=0.01, value=0.08, step=0.01, format="%.2f")
+        split_by_file = st.checkbox(t["split_file"], value=True)
+        group_by_plan = st.checkbox(t["group_plan"], value=True)
 
 checked_df = filter_unstable_segments(
     std_df,
-    speed_col=None if speed_col == "无" else speed_col,
+    speed_col=None if speed_col == t["none_opt"] else speed_col,
     min_speed=min_speed,
     max_speed_span=max_speed_span,
     max_speed_jump=max_speed_jump,
@@ -1054,16 +1279,16 @@ checked_df = filter_unstable_segments(
 f1, f2, f3, f4 = st.columns(4)
 with f1:
     file_opts = sorted(checked_df["来源文件"].dropna().unique())
-    sel_file = st.multiselect("筛选来源文件", file_opts, default=file_opts)
+    sel_file = st.multiselect(t["flt_file"], file_opts, default=file_opts)
 with f2:
     pol_opts = sorted(checked_df["极性"].dropna().unique())
-    sel_pol = st.multiselect("筛选极性", pol_opts, default=pol_opts)
+    sel_pol = st.multiselect(t["flt_pol"], pol_opts, default=pol_opts)
 with f3:
     mod_opts = sorted(checked_df["产品型号"].dropna().unique())
-    sel_mod = st.multiselect("筛选产品型号", mod_opts, default=mod_opts)
+    sel_mod = st.multiselect(t["flt_mod"], mod_opts, default=mod_opts)
 with f4:
     plan_opts = sorted(checked_df["标准_计划号"].dropna().unique())
-    sel_plan = st.multiselect("筛选计划号", plan_opts, default=plan_opts)
+    sel_plan = st.multiselect(t["flt_plan"], plan_opts, default=plan_opts)
 
 temp_avail_items = discover_zone_item_types(numeric_cols, kind="temp", max_zones=8)
 fan_avail_items = discover_zone_item_types(numeric_cols, kind="fan", max_zones=8)
@@ -1089,35 +1314,35 @@ if st.session_state.get("last_chart_avail_sig") != avail_sig:
 
 applied_cfg = st.session_state.applied_chart_cfg
 
-with st.expander("温度及鼓风机折线图选择与主次坐标配置", expanded=True):
+with st.expander(t["exp_chart_cfg"], expanded=True):
     with st.form("chart_axis_form"):
         c_t1, c_t2 = st.columns(2)
         with c_t1:
-            st.markdown("**温度折线图（复选参数 + 次坐标设置）**")
+            st.markdown(t["temp_cfg_title"])
             form_temp_sel = st.multiselect(
-                "选择要绘制的温度曲线",
+                t["temp_sel"],
                 options=temp_avail_items,
                 default=[x for x in applied_cfg["temp_selected"] if x in temp_avail_items],
             )
             form_temp_sec = st.multiselect(
-                "设为次坐标（右轴 y2）的温度曲线（其余默认主坐标 y1）",
+                t["temp_sec"],
                 options=temp_avail_items,
                 default=[x for x in applied_cfg["temp_secondary"] if x in temp_avail_items],
             )
         with c_t2:
-            st.markdown("**鼓风机折线图（复选参数 + 次坐标设置）**")
+            st.markdown(t["fan_cfg_title"])
             form_fan_sel = st.multiselect(
-                "选择要绘制的鼓风机曲线",
+                t["fan_sel"],
                 options=fan_avail_items,
                 default=[x for x in applied_cfg["fan_selected"] if x in fan_avail_items],
             )
             form_fan_sec = st.multiselect(
-                "设为次坐标（右轴 y2）的鼓风机曲线（其余默认主坐标 y1）",
+                t["fan_sec"],
                 options=fan_avail_items,
                 default=[x for x in applied_cfg["fan_secondary"] if x in fan_avail_items],
             )
 
-        submitted = st.form_submit_button("确认并绘制图表", type="primary")
+        submitted = st.form_submit_button(t["apply_chart"], type="primary")
         if submitted:
             st.session_state.applied_chart_cfg = {
                 "temp_selected": [x for x in form_temp_sel if x in temp_avail_items],
@@ -1137,19 +1362,19 @@ view_all = checked_df[mask_view].copy()
 view_steady = view_all[view_all["是否稳态"]].copy()
 
 render_mode = st.radio(
-    "型号报表渲染方式（筛选多型号时建议“单型号聚焦”，响应更快）",
-    ["单型号聚焦渲染", "全部型号同时渲染"],
+    t["render_mode"],
+    [t["mode_focus"], t["mode_all"]],
     horizontal=True,
 )
 
-top_tabs = st.tabs(["型号报表", "汇总表", "过滤记录", "明细与导出"])
+top_tabs = st.tabs(t["tabs"])
 
 with top_tabs[0]:
     if not sel_mod:
-        st.info("请先在上方“筛选产品型号”中选择至少一个型号。")
-    elif render_mode == "单型号聚焦渲染":
-        active_model = st.selectbox("选择要查看的产品型号", sel_mod, key="active_model_focus")
-        st.subheader(f"型号 {active_model}")
+        st.info("Select at least one model above." if lang_choice == "en" else "请先在上方“筛选产品型号”中选择至少一个型号。")
+    elif render_mode == t["mode_focus"]:
+        active_model = st.selectbox(t["pick_model"], sel_mod, key="active_model_focus")
+        st.subheader(f"{t['model_prefix']} {active_model}")
         m_steady = view_steady[view_steady["产品型号"] == active_model].copy()
         m_all = view_all[view_all["产品型号"] == active_model].copy()
         render_model_report_page(
@@ -1161,12 +1386,13 @@ with top_tabs[0]:
             temp_secondary=applied_cfg["temp_secondary"],
             fan_selected=applied_cfg["fan_selected"],
             fan_secondary=applied_cfg["fan_secondary"],
+            lang=lang_choice,
         )
     else:
-        sub_m_tabs = st.tabs([f"型号：{m}" for m in sel_mod])
+        sub_m_tabs = st.tabs([f"{t['model_prefix']}: {m}" for m in sel_mod])
         for idx, m_code in enumerate(sel_mod):
             with sub_m_tabs[idx]:
-                st.subheader(f"型号 {m_code}")
+                st.subheader(f"{t['model_prefix']} {m_code}")
                 m_steady = view_steady[view_steady["产品型号"] == m_code].copy()
                 m_all = view_all[view_all["产品型号"] == m_code].copy()
                 render_model_report_page(
@@ -1178,10 +1404,11 @@ with top_tabs[0]:
                     temp_secondary=applied_cfg["temp_secondary"],
                     fan_selected=applied_cfg["fan_selected"],
                     fan_secondary=applied_cfg["fan_secondary"],
+                    lang=lang_choice,
                 )
 
 with top_tabs[1]:
-    st.subheader("稳态参数汇总")
+    st.subheader(t["tabs"][1])
     view_summary = build_summary_table(
         view_steady,
         tuple(numeric_cols),
@@ -1189,29 +1416,29 @@ with top_tabs[1]:
         group_by_plan=group_by_plan,
     )
     if view_summary.empty:
-        st.warning("当前筛选条件下暂无稳态数据。")
+        st.warning("No steady data under current filters." if lang_choice == "en" else "当前筛选条件下暂无稳态数据。")
     else:
         if split_by_file and "来源文件" in view_summary.columns and view_summary["来源文件"].nunique() > 1:
             for fn_val, sub_sum in view_summary.groupby("来源文件", dropna=False):
-                with st.expander(f"{fn_val}（{len(sub_sum)} 组）", expanded=True):
+                with st.expander(f"{fn_val} ({len(sub_sum)})", expanded=True):
                     st.dataframe(sub_sum, use_container_width=True, hide_index=True)
         else:
             st.dataframe(view_summary, use_container_width=True, hide_index=True)
 
 with top_tabs[2]:
-    st.subheader("已过滤记录")
+    st.subheader(t["tabs"][2])
     removed_df = view_all[~view_all["是否稳态"]].copy()
     if removed_df.empty:
-        st.info("当前筛选范围内没有被屏蔽的不稳定记录。")
+        st.info("No filtered unstable records." if lang_choice == "en" else "当前筛选范围内没有被屏蔽的不稳定记录。")
     else:
         reason_stats = removed_df["剔除原因"].value_counts().reset_index()
-        reason_stats.columns = ["屏蔽原因", "剔除行数"]
+        reason_stats.columns = ["Reason", "Rows"] if lang_choice == "en" else ["屏蔽原因", "剔除行数"]
         st.dataframe(reason_stats, use_container_width=True, hide_index=True)
         st.dataframe(removed_df, use_container_width=True, hide_index=True)
 
 with top_tabs[3]:
-    st.subheader("明细与导出")
-    if st.button("准备导出文件（.xlsx / .csv）", type="primary"):
+    st.subheader(t["tabs"][3])
+    if st.button("Prepare Export (.xlsx / .csv)" if lang_choice == "en" else "准备导出文件（.xlsx / .csv）", type="primary"):
         sum_for_export = build_summary_table(
             view_steady,
             tuple(numeric_cols),
@@ -1225,7 +1452,7 @@ with top_tabs[3]:
         d1, d2 = st.columns(2)
         with d1:
             st.download_button(
-                label="下载完整结果 (.xlsx)",
+                label="Download Full Workbook (.xlsx)" if lang_choice == "en" else "下载完整结果 (.xlsx)",
                 data=st.session_state["export_xlsx_bytes"],
                 file_name=f"机台Log稳态报表_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1233,11 +1460,11 @@ with top_tabs[3]:
             )
         with d2:
             st.download_button(
-                label="下载汇总表 (.csv)",
+                label="Download Summary (.csv)" if lang_choice == "en" else "下载汇总表 (.csv)",
                 data=st.session_state["export_csv_bytes"],
                 file_name=f"稳态工艺汇总_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
-    show_only_steady = st.checkbox("仅显示稳态运行行", value=False)
+    show_only_steady = st.checkbox("Show steady rows only" if lang_choice == "en" else "仅显示稳态运行行", value=False)
     st.dataframe(view_steady if show_only_steady else view_all, use_container_width=True, hide_index=True)
